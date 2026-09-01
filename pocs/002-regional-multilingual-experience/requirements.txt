@@ -1,0 +1,10 @@
+streamlit>=1.36
+azure-identity>=1.17
+azure-appconfiguration>=1.6
+azure-monitor-query>=1.4,<3
+azure-search-documents>=11.5,<12
+azure-ai-textanalytics>=5.3,<6
+openai>=1.40
+Jinja2>=3.1
+PyYAML>=6.0
+python-dotenv>=1.0

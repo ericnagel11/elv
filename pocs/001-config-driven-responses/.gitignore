@@ -1,0 +1,6 @@
+.env
+roles.local.json
+feedback.csv
+.venv/
+__pycache__/
+*.pyc

@@ -1,0 +1,60 @@
+{
+  "$comment": [
+    "Content metadata owned by the content steward, not by developers.",
+    "Each entry becomes Azure Blob metadata at upload time, and the blob indexer",
+    "maps blob metadata into index fields of the same name automatically.",
+    "The 'status' value is what knowledge:filter selects on, so moving a document",
+    "from draft to approved is a metadata change rather than a code change.",
+    "IsDeleted is the soft-delete marker. The indexer's deletion detection policy",
+    "watches it, and it must exist from the very first indexer run.",
+    "Note on contoso-returns-policy-2027-draft.md: it is unapproved content, but",
+    "its body deliberately reads like a finished policy. The governance signal",
+    "lives in the status metadata here, not in the prose. An earlier version said",
+    "'must NOT be quoted to customers' inside the document, which the model read",
+    "as an instruction and refused to answer, hiding the very failure the scope",
+    "comparison exists to show: unapproved content produces a confident wrong",
+    "answer that looks exactly like a right one."
+  ],
+  "documents": [
+    {
+      "file": "contoso-healthcare-standards.md",
+      "industry": "healthcare",
+      "audience": "member-support",
+      "status": "approved",
+      "effective_date": "2026-01-15",
+      "IsDeleted": "false"
+    },
+    {
+      "file": "contoso-financial-standards.md",
+      "industry": "financial-services",
+      "audience": "client-support",
+      "status": "approved",
+      "effective_date": "2026-02-01",
+      "IsDeleted": "false"
+    },
+    {
+      "file": "contoso-returns-policy.md",
+      "industry": "retail",
+      "audience": "customer-support",
+      "status": "approved",
+      "effective_date": "2026-03-01",
+      "IsDeleted": "false"
+    },
+    {
+      "file": "contoso-returns-policy-2027-draft.md",
+      "industry": "retail",
+      "audience": "customer-support",
+      "status": "draft",
+      "effective_date": "2027-01-01",
+      "IsDeleted": "false"
+    },
+    {
+      "file": "contoso-onboarding-module-1.md",
+      "industry": "cross-industry",
+      "audience": "new-hire",
+      "status": "approved",
+      "effective_date": "2026-01-05",
+      "IsDeleted": "false"
+    }
+  ]
+}

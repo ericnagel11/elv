@@ -1,0 +1,39 @@
+---
+name: Customer Response (v1 baseline)
+description: >-
+  Original customer-support reply template. Minimal guidance; the wording is
+  driven entirely by the configuration values injected at runtime.
+authors:
+  - config-driven-responses PoC
+model:
+  api: chat
+  configuration:
+    type: azure_openai
+    azure_endpoint: ${env:AZURE_OPENAI_ENDPOINT}
+    azure_deployment: ${env:AZURE_OPENAI_DEPLOYMENT}
+    api_version: 2024-10-21
+  parameters:
+    # gpt-5 family models are reasoning models: max_completion_tokens is a budget
+    # for hidden reasoning tokens *and* visible output. If reasoning consumes it
+    # all, the call returns finish_reason "length" with empty content. Capping
+    # reasoning effort and leaving headroom keeps the answer from disappearing.
+    max_completion_tokens: 3000
+    reasoning_effort: low
+sample:
+  persona: a Contoso customer support agent
+  tone: neutral and professional
+  verbosity: brief
+  reading_level: grade 9
+  response_structure: a single short paragraph
+  user_message: Where is my order? It was supposed to arrive yesterday.
+---
+system:
+You are {{persona}}.
+Answer the customer's message.
+Tone: {{tone}}.
+Verbosity: {{verbosity}}.
+Reading level: {{reading_level}}.
+Structure the reply as {{response_structure}}.
+
+user:
+{{user_message}}
