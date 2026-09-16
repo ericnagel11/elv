@@ -28,8 +28,10 @@ from functools import lru_cache
 
 import yaml
 from jinja2 import Template
-from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+from azure.identity import get_bearer_token_provider
 from openai import AzureOpenAI
+
+import rbac
 
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
 COGNITIVE_SCOPE = "https://cognitiveservices.azure.com/.default"
@@ -38,7 +40,7 @@ _ROLE_RE = re.compile(r"^\s*(system|user|assistant)\s*:\s*$", re.IGNORECASE | re
 
 @lru_cache(maxsize=1)
 def _aoai_client() -> AzureOpenAI:
-    token_provider = get_bearer_token_provider(DefaultAzureCredential(), COGNITIVE_SCOPE)
+    token_provider = get_bearer_token_provider(rbac.service_credential("runtime"), COGNITIVE_SCOPE)
     return AzureOpenAI(
         azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
         azure_ad_token_provider=token_provider,

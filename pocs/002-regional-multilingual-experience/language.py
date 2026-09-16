@@ -26,7 +26,8 @@ from functools import lru_cache
 
 from azure.core.exceptions import HttpResponseError
 from azure.ai.textanalytics import TextAnalyticsClient
-from azure.identity import DefaultAzureCredential
+
+import rbac
 
 ENDPOINT_ENV = "AZURE_LANGUAGE_ENDPOINT"
 
@@ -51,7 +52,7 @@ def configured() -> bool:
 
 @lru_cache(maxsize=1)
 def _client() -> TextAnalyticsClient:
-    return TextAnalyticsClient(endpoint=endpoint(), credential=DefaultAzureCredential())
+    return TextAnalyticsClient(endpoint=endpoint(), credential=rbac.service_credential("runtime"))
 
 
 def mode_of(profile: dict) -> str:

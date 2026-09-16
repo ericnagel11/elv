@@ -13,10 +13,10 @@ Azure permissions as the global experience designer. Restricting them to their
 own market requires a compensating control outside Azure RBAC, and the
 governance tab names it rather than implying the platform does it.
 
-Secrets are read from roles.local.json, which scripts/setup-governance.ps1
-writes and .gitignore excludes. Using client secrets is a proof-of-concept
-shortcut so that one process can act as several identities; a production system
-would use managed identity or sign the user in directly.
+Azure VM mode uses explicitly selected managed identities and never reads local
+secrets. Legacy development mode reads roles.local.json, which the original
+setup script writes and .gitignore excludes. Neither mode turns the persona
+selector into user authentication or isolates identities between VM processes.
 """
 
 import json
@@ -24,6 +24,8 @@ import os
 from functools import lru_cache
 
 from azure.identity import ClientSecretCredential, DefaultAzureCredential
+
+import hosting
 
 ROLES_FILE = os.path.join(os.path.dirname(__file__), "roles.local.json")
 
@@ -106,17 +108,21 @@ def _roles_file() -> dict:
 
 
 def personas_configured() -> bool:
-    """True once setup-governance.ps1 has provisioned the service principals."""
+    """Validate local identity configuration; this does not verify Azure roles."""
+    if hosting.vm_mode():
+        hosting.identity_ids(PERSONAS)
+        return True
     return bool(_roles_file().get("personas"))
 
 
 def credential_for(persona: str):
     """Return the credential for a persona.
 
-    Falls back to DefaultAzureCredential (the signed-in developer) when the
-    roles file is absent, so the application still runs before the governance
-    layer is provisioned.
+    VM mode never falls back. Only legacy development mode uses the signed-in
+    developer when the roles file is absent.
     """
+    if hosting.vm_mode():
+        return hosting.managed_credential(persona, PERSONAS)
     data = _roles_file()
     entry = (data.get("personas") or {}).get(persona)
     if not entry:
@@ -129,8 +135,19 @@ def credential_for(persona: str):
 
 
 def display_name(persona: str) -> str:
+    if hosting.vm_mode():
+        return f"Managed identity ({persona})"
     entry = (_roles_file().get("personas") or {}).get(persona) or {}
     return entry.get("displayName", "not provisioned (using your sign-in)")
+
+
+def service_credential(service: str):
+    """Runtime and audit never borrow a developer credential in VM mode."""
+    if service not in {"runtime", "audit"}:
+        raise ValueError("Unknown service identity.")
+    if hosting.vm_mode():
+        return hosting.managed_credential("app" if service == "runtime" else "audit", PERSONAS)
+    return DefaultAzureCredential()
 
 
 def credential_warnings() -> list:
@@ -141,6 +158,9 @@ def credential_warnings() -> list:
     other persona then fails to sign in, which is easily mistaken for an RBAC
     denial.
     """
+    if hosting.vm_mode():
+        hosting.identity_ids(PERSONAS)
+        return []
     personas = _roles_file().get("personas") or {}
     warnings = []
     seen = {}

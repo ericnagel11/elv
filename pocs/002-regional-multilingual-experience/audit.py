@@ -15,15 +15,17 @@ the certification gate is a key, a change to what a market may draw on appears
 in AACAudit like any other write. That is the whole answer to "who decided that
 machine-translated content could answer German customers, and when".
 
-Queries run under the signed-in developer credential rather than a persona, so
-the demonstration does not need Log Analytics Reader granted to every service
-principal.
+VM queries use a dedicated managed identity and resource context for the two
+App Configuration stores. Outside VM mode, queries use the developer credential
+and configured workspace. Query scope does not replace Azure access controls.
 """
 
 import os
 
-from azure.identity import DefaultAzureCredential
 from azure.monitor.query import LogsQueryClient, LogsQueryStatus
+
+import hosting
+import rbac
 
 WORKSPACE_ENV = "AZURE_LOG_ANALYTICS_WORKSPACE_ID"
 
@@ -62,11 +64,30 @@ def workspace_configured() -> bool:
 
 def run_query(query: str):
     """Run a KQL query and return (columns, rows). Raises on query failure."""
-    workspace_id = os.environ[WORKSPACE_ENV]
-    client = LogsQueryClient(DefaultAzureCredential())
-    response = client.query_workspace(workspace_id=workspace_id, query=query, timespan=None)
+    client = LogsQueryClient(rbac.service_credential("audit"))
+    if hosting.vm_mode():
+        columns, rows = [], []
+        for resource_id in hosting.audit_resource_ids():
+            response = client.query_resource(resource_id=resource_id, query=query, timespan=None)
+            resource_columns, resource_rows = _query_result(response)
+            if resource_columns:
+                if columns and columns != resource_columns:
+                    raise RuntimeError("The two resource log schemas do not match.")
+                columns = resource_columns
+                rows.extend(resource_rows)
+        # Each canned query projects TimeGenerated first and already limits its
+        # own resource results. Merge both without hiding the newest event.
+        return columns, sorted(rows, key=lambda row: str(row[0]), reverse=True)[:50]
+    response = client.query_workspace(
+        workspace_id=os.environ[WORKSPACE_ENV], query=query, timespan=None
+    )
+    return _query_result(response)
 
+
+def _query_result(response):
     status = getattr(response, "status", LogsQueryStatus.SUCCESS)
+    if hosting.vm_mode() and status != LogsQueryStatus.SUCCESS:
+        raise RuntimeError("Audit query incomplete; verify resource-log access and diagnostics.")
     if status == LogsQueryStatus.FAILURE:
         raise RuntimeError(getattr(response, "partial_error", "The log query failed."))
 

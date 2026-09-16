@@ -201,7 +201,7 @@ def probe(persona: str) -> list:
                             "outcome": "Denied by Azure (403)"})
         except CredentialError:
             results.append({"operation": operation, "allowed": None,
-                            "outcome": "Sign-in failed: the client secret looks stale"})
+                            "outcome": "Sign-in failed: check the configured Azure identity"})
         except Exception as exc:  # configuration gaps, not authorization
             results.append({"operation": operation, "allowed": None,
                             "outcome": f"Inconclusive: {exc}"})

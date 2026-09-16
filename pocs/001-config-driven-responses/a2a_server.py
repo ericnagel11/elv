@@ -3,7 +3,7 @@
 import os
 
 import uvicorn
-from dotenv import load_dotenv
+from hosting import load_environment
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -16,7 +16,7 @@ from a2a.server.tasks import InMemoryTaskStore
 from a2a_agent import ExperienceAgentExecutor, build_agent_card
 from experience_runtime import ConfiguredResponseRuntime
 
-load_dotenv(encoding="utf-8-sig", override=True)
+load_environment()
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9999

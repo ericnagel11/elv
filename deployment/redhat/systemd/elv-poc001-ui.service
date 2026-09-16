@@ -1,0 +1,41 @@
+# Managed by elv Red Hat hosting
+[Unit]
+Description=ELV PoC 001 private Streamlit UI
+Wants=network-online.target elv-poc001-agent.service
+After=network-online.target elv-poc001-agent.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=elv-poc001
+Group=elv-poc001
+WorkingDirectory=/opt/elv/pocs/001-config-driven-responses
+EnvironmentFile=/etc/elv/poc001.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/var/lib/elv-poc001
+Environment=ELV_STATE_DIRECTORY=/var/lib/elv-poc001
+Environment=XDG_CACHE_HOME=/var/cache/elv-poc001
+ExecStart=/opt/elv/pocs/001-config-driven-responses/.venv/bin/python /opt/elv/deployment/redhat/run.py --poc 001 --component ui
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+StateDirectory=elv-poc001
+StateDirectoryMode=0700
+CacheDirectory=elv-poc001
+CacheDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

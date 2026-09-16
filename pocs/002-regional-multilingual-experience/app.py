@@ -20,7 +20,7 @@ import os
 import logging
 
 import streamlit as st
-from dotenv import load_dotenv
+from hosting import load_environment, vm_mode
 
 import assets
 import audit
@@ -39,9 +39,8 @@ from prompt import generate_response
 # denials this demo relies on are unaffected. Errors are still shown.
 logging.getLogger("azure.appconfiguration").setLevel(logging.ERROR)
 
-# utf-8-sig tolerates a UTF-8 BOM (Windows PowerShell 5.1 may add one); override
-# lets an edited .env take effect on the next rerun.
-load_dotenv(encoding="utf-8-sig", override=True)
+# Hosted settings are authoritative; VM mode never reads a checkout's .env.
+load_environment()
 
 st.set_page_config(page_title="Regional and Multilingual Experience PoC", layout="wide")
 
@@ -246,8 +245,9 @@ def show_denied(problem, persona: str) -> None:
         with st.expander("Azure response"):
             st.code(problem.detail or "Unauthorized", language="text")
         st.caption(
-            "The client secret in roles.local.json is probably stale. Re-run "
-            "scripts/setup-governance.ps1 to reissue the credentials."
+            "Check the configured identity and its authentication status. In VM mode, "
+            "verify managed identity attachment and client IDs; do not reissue secrets "
+            "or rerun provisioning scripts against shared resources."
         )
         return
 
@@ -283,7 +283,9 @@ with st.sidebar:
         label_visibility="collapsed",
     )
     st.caption(rbac.PERSONAS[persona]["summary"])
-    st.caption(f"Service principal: {rbac.display_name(persona)}")
+    st.caption(f"Azure identity: {rbac.display_name(persona)}")
+    if vm_mode():
+        st.info("Presenter-only demo. Persona switching is not user authentication.")
     st.table(rbac.role_rows(persona))
     if rbac.PERSONAS[persona]["scope_note"]:
         st.warning(rbac.PERSONAS[persona]["scope_note"])
@@ -718,7 +720,10 @@ with tab_audit:
     if not audit.workspace_configured():
         st.info("Run scripts/setup-governance.ps1 to create the Log Analytics workspace.")
     else:
-        st.caption("Queries run under your own sign-in, not the selected persona.")
+        st.caption(
+            "Queries use the dedicated audit identity and live/draft resource scope."
+            if vm_mode() else "Queries run under your own sign-in, not the selected persona."
+        )
         col_a, col_b, col_c = st.columns(3)
         if col_a.button("Who changed what", use_container_width=True):
             st.session_state["audit"] = ("Configuration changes", audit.CHANGES_QUERY)

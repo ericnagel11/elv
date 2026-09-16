@@ -1,0 +1,7 @@
+# Shell scripts are executed on Linux, including after a Windows checkout.
+deployment/redhat/*.sh text eol=lf
+deployment/redhat/*.py text eol=lf
+deployment/redhat/systemd/*.service text eol=lf
+deployment/redhat/*.env.example text eol=lf
+deployment/appconfig/*.sh text eol=lf
+pocs/*/hosting.py text eol=lf

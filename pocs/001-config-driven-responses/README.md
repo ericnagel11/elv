@@ -66,6 +66,20 @@ observe newly published configuration.
 
 ## Prerequisites
 
+### Red Hat VM / existing Azure services
+
+Use the shared [Red Hat hosting runbook](../../deployment/redhat/README.md).
+It runs both PoCs headlessly using private systemd services, separate Python
+environments and explicit managed identities. Run applications and tests on the
+VM only; use a workstation browser through the approved SSH tunnel.
+
+**Do not use the provisioning/teardown steps below against existing shared Azure
+resources.** Those steps describe the original disposable development setup and
+can overwrite settings or delete services. VM deployment has separate resource
+readiness and identity gates; target VM verification is still pending.
+
+### Original disposable development environment
+
 - Azure subscription where you can create an Azure OpenAI resource.
 - Azure CLI (`az`) and PowerShell (`pwsh` or Windows PowerShell).
 - Python 3.10 or later.
@@ -152,12 +166,16 @@ production must put it behind HTTPS and Entra OAuth/OIDC authorization.
 
 ## Security notes
 
-- Authentication uses Entra ID through `DefaultAzureCredential`. No connection
+- VM mode uses explicit managed identities, does not load dotenv/persona-secret
+  files and restricts audit requests to configured live/draft resource contexts.
+  The VM and all presenters are one trusted demo boundary; the persona selector
+  is not user authentication. See the [hosting security boundary](../../deployment/redhat/README.md#boundaries-read-before-installing).
+- Legacy development authentication uses Entra ID through `DefaultAzureCredential`. No connection
   strings or API keys are stored in code or in `.env` (endpoints only).
 - Access is least-privilege via RBAC (App Configuration and Azure OpenAI data
   roles scoped to the two resources).
 - The governance demo writes service principal client secrets to
-  `roles.local.json`, which is gitignored. This is a proof-of-concept shortcut so
+  `roles.local.json` in the original non-VM mode, which is gitignored. This is a proof-of-concept shortcut so
   one process can act as four identities. Production would use managed identity
   or sign the user in. `scripts/teardown.ps1` deletes those identities.
 - Use synthetic messages only. Do not paste real customer or personal data.

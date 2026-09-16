@@ -76,6 +76,20 @@ need an index (or a field) per language.
 
 ## Prerequisites
 
+### Red Hat VM / existing Azure services
+
+Use the shared [Red Hat hosting runbook](../../deployment/redhat/README.md).
+It runs both PoCs headlessly using private systemd services, separate Python
+environments and explicit managed identities. Run applications and tests on the
+VM only; use a workstation browser through the approved SSH tunnel.
+
+**Do not use the provisioning/teardown steps below against existing shared Azure
+resources.** Those steps describe the original disposable development setup and
+can overwrite settings or delete services. VM deployment requires Search,
+Language and audit readiness for the full demo; target VM verification is pending.
+
+### Original disposable development environment
+
 - Azure CLI, signed in to a subscription where you can create Azure OpenAI.
 - Python 3.10 or later.
 - To create service principals: rights to create Entra ID app registrations,
@@ -150,9 +164,13 @@ customers in this market, and when.
 
 ## Security notes
 
-- No keys anywhere. Every Azure call uses Entra ID.
+- VM mode uses explicit managed identities, skips dotenv/persona-secret files,
+  and uses resource-context audit requests. Every presenter can select every
+  persona; this is not user authentication or isolation between VM processes.
+- Runtime Azure calls use Entra ID. The original Free-tier Search setup can use
+  a storage account key for its indexer; the VM hosting installer does not run it.
 - `roles.local.json` holds client secrets and is excluded by `.gitignore`.
-  Client secrets are a proof-of-concept shortcut so one process can act as five
+  In the original non-VM mode, client secrets are a proof-of-concept shortcut so one process can act as five
   identities. Production would use managed identity or user sign-in.
 - All content is synthetic. The German and Spanish policy documents are written
   for a demonstration. They are illustrative of the workflow and are not legal
