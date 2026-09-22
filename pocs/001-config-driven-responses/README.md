@@ -61,7 +61,37 @@ production again. **Refresh configuration from Azure** does the same for externa
 configuration changes; draft saves invalidate knowledge previews. Do not treat a pinned old conversation as a failed
 save, or promise that all remote contexts refresh automatically.
 
-## Prerequisites: reuse approved services
+
+### Windows VM / one-identity comparison
+
+Use the [Windows comparison runbook](../../deployment/windows/README.md) for the
+current Windows VM and existing GPT-4o deployment. It launches the UI and A2A
+agent on localhost with one explicit managed identity, external nonsecret JSON
+settings and no client-secret/developer fallback. The App Configuration store
+must contain both synthetic comparison profiles before responses can be generated.
+
+This mode disables persona switching, publishing, permission probes and audit.
+Search is off unless `ELV_ENABLE_RAG` is explicitly enabled with an approved
+endpoint/index allowlist. Configuration writes remain off unless the Windows runtime JSON explicitly
+sets `ELV_ENABLE_CONFIG_EDITING` to `"true"`. That option adds a **Configuration**
+tab for existing baseline/candidate experience values, using direct live updates
+with ETag conflict checks under the same managed identity. It does not simulate
+separate Azure roles or a draft approval workflow. Full governance remains the
+default outside comparison mode.
+
+Optional [existing-index RAG](../../deployment/windows/README.md#ground-responses-with-an-existing-search-index)
+maps `Content`, `Title`, `Status`, `State` and source metadata through
+`knowledge:*` settings. The first integration uses keyword retrieval from the
+approved `medical-policies-vector` index, not its vectors. Enable **Ground with
+AI Search** for sourced responses; edit the per-profile OData filter through
+**Configuration > Knowledge**. Azure resource tags do not become document
+filters automatically. This integration does not recreate or modify indexes.
+
+Users currently sign into the VM and view the PoC at localhost. Shared networking
+and HTTPS are deferred by the customer; the Windows runbook retains the proposed
+administrator steps for future use. Persistent Windows services are not installed.
+
+### Red Hat VM / existing Azure services
 
 ### Runtime boundaries
 

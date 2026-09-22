@@ -31,13 +31,14 @@ Underscore-prefixed functions are internal helpers, not application entry points
 """
 
 import os
+import re
 from functools import lru_cache
 
 from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 from azure.search.documents import SearchClient
 
 import rbac
-from config import AccessDenied, CredentialError
+from config import AccessDenied, CredentialError, validate_knowledge_value
 from search_settings import DEFAULTS, normalize_settings
 
 KNOWLEDGE_PREFIX = "knowledge:"
@@ -63,6 +64,72 @@ SELECT_FIELDS = [
 
 # A guard against one oversized document consuming the whole prompt budget.
 MAX_CHARS_PER_DOCUMENT = 2500
+
+FIELD_DEFAULTS = {
+    "title": "title",
+    "content": "content",
+    "url": "url",
+    "industry": "industry",
+    "audience": "audience",
+    "status": "status",
+    "effective_date": "effective_date",
+    "state": "",
+    "source": "",
+}
+
+
+def field_mapping(settings: dict) -> dict:
+    mapping = {}
+    for name, default in FIELD_DEFAULTS.items():
+        value = str(settings.get(f"{name}_field", default)).strip()
+        if value and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(/[A-Za-z][A-Za-z0-9_]*)*", value):
+            raise ValueError(f"knowledge:{name}_field must be a Search field name or empty.")
+        if name in {"title", "content"} and not value:
+            raise ValueError(f"knowledge:{name}_field is required.")
+        mapping[name] = value
+    return mapping
+
+
+def _field_value(item: dict, path: str):
+    value = item
+    for part in path.split("/"):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+FIELD_DEFAULTS = {
+    "title": "title",
+    "content": "content",
+    "url": "url",
+    "industry": "industry",
+    "audience": "audience",
+    "status": "status",
+    "effective_date": "effective_date",
+    "state": "",
+    "source": "",
+}
+
+
+def field_mapping(settings: dict) -> dict:
+    mapping = {}
+    for name, default in FIELD_DEFAULTS.items():
+        value = str(settings.get(f"{name}_field", default)).strip()
+        if value and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(/[A-Za-z][A-Za-z0-9_]*)*", value):
+            raise ValueError(f"knowledge:{name}_field must be a Search field name or empty.")
+        if name in {"title", "content"} and not value:
+            raise ValueError(f"knowledge:{name}_field is required.")
+        mapping[name] = value
+    return mapping
+
+
+def _field_value(item: dict, path: str):
+    value = item
+    for part in path.split("/"):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
 
 
 def endpoint() -> str:
@@ -115,6 +182,13 @@ def _client(index_name: str, persona) -> SearchClient:
 
 
 def settings_from_profile(profile: dict) -> dict:
+    """Merge the knowledge:* values already loaded from App Configuration over the
+    defaults, so a partially seeded store still behaves predictably."""
+    merged = dict(DEFAULTS)
+    for key, value in (profile or {}).items():
+        if value is not None and (str(value).strip() != "" or key.endswith("_field")):
+            merged[key] = str(value).strip()
+    return merged
     """Return retrieval settings for the UI, runtime and diagnostic script.
 
     Call after config.load_knowledge(), which has already fetched configuration
@@ -157,6 +231,7 @@ def _top_k(settings: dict) -> int:
 
 
 def _run(client: SearchClient, question: str, settings: dict, semantic: bool):
+    mapping = field_mapping(settings)
     """Execute the read-only Azure AI Search request on behalf of search().
 
     client is the index/persona-specific SDK client; question becomes search_text.
@@ -173,15 +248,21 @@ def _run(client: SearchClient, question: str, settings: dict, semantic: bool):
     kwargs = {
         "search_text": question,
         "top": _top_k(settings),
-        "select": SELECT_FIELDS,
+        "select": list(dict.fromkeys(field for field in mapping.values() if field)),
     }
+    search_fields = (settings.get("search_fields") or "").strip()
+    if search_fields:
+        fields = [field.strip() for field in search_fields.split(",")]
+        if any(not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(/[A-Za-z][A-Za-z0-9_]*)*", field) for field in fields):
+            raise ValueError("knowledge:search_fields must be comma-separated Search field names.")
+        kwargs["search_fields"] = fields
     filter_expression = (settings.get("filter") or "").strip()
     if filter_expression:
         # Pass the configured scope as an OData filter, not as search-text syntax.
         kwargs["filter"] = filter_expression
     if semantic:
         kwargs["query_type"] = "semantic"
-        kwargs["semantic_configuration_name"] = SEMANTIC_CONFIG
+        kwargs["semantic_configuration_name"] = settings.get("semantic_configuration") or SEMANTIC_CONFIG
     # This is the SDK query call; consume the lazy response before returning.
     return list(client.search(**kwargs))
 
@@ -211,12 +292,19 @@ def search(question: str, settings: dict, persona=None) -> dict:
     contact Azure, but does not modify the index or generate a model response.
     """
     notes = []
+    mapping = field_mapping(settings)
     index_name = settings.get("index") or DEFAULTS["index"]
+    rbac.require_grounding(index_name, persona)
+    if rbac.comparison_mode():
+        for key in ("enabled", "index", "top_k", "query_mode", "citation_style"):
+            validate_knowledge_value(key, str(settings.get(key, DEFAULTS[key])))
     wants_semantic = (settings.get("query_mode") or "").strip().lower() == "semantic"
 
     try:
         client = _client(index_name, persona)
     except RuntimeError as exc:
+        if rbac.comparison_mode():
+            raise ValueError("Configure the approved AZURE_SEARCH_ENDPOINT before requesting grounding.") from None
         return {"documents": [], "notes": [str(exc)], "index": index_name}
 
     try:
@@ -245,6 +333,8 @@ def search(question: str, settings: dict, persona=None) -> dict:
                 f"HTTP 403: {(exc.message or '').strip() or 'Forbidden'}",
             ) from exc
         if exc.status_code == 404:
+            if rbac.comparison_mode():
+                raise ValueError("The configured Search index could not be found.") from None
             return {
                 "documents": [],
                 "notes": [f"Index '{index_name}' does not exist on the search service."],
@@ -256,17 +346,22 @@ def search(question: str, settings: dict, persona=None) -> dict:
     # Truncation happens after retrieval; it is not a Search response-size limit.
     documents = []
     for item in raw:
-        content = (item.get("content") or "").strip()
+        content = _field_value(item, mapping["content"]) or ""
+        if not isinstance(content, str):
+            raise ValueError("The configured content field must contain text.")
+        content = content.strip()
+        if not content:
+            continue
+        values = {
+            name: str(_field_value(item, field) or "") if field else ""
+            for name, field in mapping.items() if name != "content"
+        }
         documents.append(
             {
-                "title": item.get("title") or "Untitled",
+                **values,
+                "title": values["title"] or "Untitled",
                 "content": content[:MAX_CHARS_PER_DOCUMENT],
                 "truncated": len(content) > MAX_CHARS_PER_DOCUMENT,
-                "url": item.get("url") or "",
-                "industry": item.get("industry") or "",
-                "audience": item.get("audience") or "",
-                "status": item.get("status") or "",
-                "effective_date": item.get("effective_date") or "",
                 "score": item.get("@search.score"),
                 "reranker_score": item.get("@search.reranker_score"),
             }
@@ -305,6 +400,7 @@ def format_context(documents: list, citation_style: str = "inline") -> str:
                 f"industry: {document['industry']}" if document["industry"] else "",
                 f"status: {document['status']}" if document["status"] else "",
                 f"effective: {document['effective_date']}" if document["effective_date"] else "",
+                f"state: {document['state']}" if document.get("state") else "",
             )
             if part
         )
@@ -326,6 +422,7 @@ def citation_list(documents: list) -> list:
     """
     return [
         {"n": position, "title": document["title"], "status": document["status"],
+         "source": document.get("source", ""), "state": document.get("state", ""),
          "score": document.get("reranker_score") or document.get("score")}
         for position, document in enumerate(documents, start=1)
     ]

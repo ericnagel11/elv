@@ -18,6 +18,7 @@ import json
 
 import streamlit as st
 import textstat
+from azure.core.exceptions import AzureError
 from hosting import load_environment, vm_mode
 
 import audit
@@ -57,6 +58,13 @@ def cached_profile(label: str, store: str, persona: str) -> dict:
 @st.cache_data(show_spinner=False)
 def cached_knowledge(label: str, store: str, persona: str) -> dict:
     return cfg.load_knowledge(label, store, persona)
+
+
+def clear_comparison_state() -> None:
+    cached_profile.clear()
+    cached_knowledge.clear()
+    for key in ("a2a_baseline_context_id", "a2a_candidate_context_id", "results"):
+        st.session_state.pop(key, None)
 
 
 @st.cache_resource(show_spinner=False)
@@ -247,6 +255,16 @@ def render_variant(column, title: str, profile: dict, result: dict) -> None:
         )
         render_answer(result)
 
+        citations = result.get("citations") or []
+        if citations:
+            with st.expander(f"Sources ({len(citations)})", expanded=True):
+                st.table([
+                    {"Source": str(int(item["n"])), "Title": item["title"],
+                     "Status": item.get("status", ""), "State": item.get("state", ""),
+                     "Document": item.get("source", "")}
+                    for item in citations
+                ])
+
         metrics = text_metrics(result["text"])
         latency = result.get("latency_s")
         metrics["Latency (s)"] = round(latency, 2) if latency is not None else "n/a"
@@ -326,46 +344,75 @@ def render_grounded(column, title: str, scope: dict, bundle: dict) -> None:
                 st.code(message["content"], language="markdown")
 
 
+try:
+    comparison = rbac.comparison_mode()
+    configuration_editing = rbac.config_editing_enabled()
+    rag_available = rbac.rag_enabled()
+    if comparison:
+        rbac.runtime_identity_id()
+    if rag_available:
+        rbac.approved_search_indexes()
+except ValueError as problem:
+    st.error(str(problem))
+    st.stop()
+
 missing = [key for key in REQUIRED_ENV if not os.environ.get(key)]
 if missing:
+    configuration_help = (
+        ". Complete the approved runtime configuration described in deployment/windows/README.md."
+        if comparison else
+        ". Copy .env.example to .env and fill in the endpoints, or run scripts/setup.ps1."
+    )
     st.error(
         "Missing environment variables: "
         + ", ".join(missing)
-        + ". Copy .env.example to .env and fill in the endpoints, or run scripts/setup.ps1."
+        + configuration_help
     )
     st.stop()
 
 
 with st.sidebar:
-    st.header("Acting as")
-    persona = st.radio(
-        "Identity",
-        options=list(rbac.PERSONAS.keys()),
-        format_func=lambda key: rbac.PERSONAS[key]["label"],
-        index=list(rbac.PERSONAS).index(rbac.DEFAULT_PERSONA),
-        label_visibility="collapsed",
-    )
-    st.caption(rbac.PERSONAS[persona]["summary"])
-    st.caption(f"Azure identity: {rbac.display_name(persona)}")
-    if vm_mode():
-        st.info("Presenter-only demo. Persona switching is not user authentication.")
-    st.table(rbac.role_rows(persona))
-
-    if not rbac.personas_configured():
-        st.warning(
-            "Service principals are not provisioned, so every action runs as your "
-            "own sign-in. Run scripts/setup-governance.ps1 to enforce these roles."
+    if comparison:
+        persona = "app"
+        st.header("Experience comparison")
+        st.caption(rbac.display_name(persona))
+    else:
+        st.header("Acting as")
+        persona = st.radio(
+            "Identity",
+            options=list(rbac.PERSONAS.keys()),
+            format_func=lambda key: rbac.PERSONAS[key]["label"],
+            index=list(rbac.PERSONAS).index(rbac.DEFAULT_PERSONA),
+            label_visibility="collapsed",
         )
-    for problem in rbac.credential_warnings():
-        st.error(problem)
+        st.caption(rbac.PERSONAS[persona]["summary"])
+        st.caption(f"Azure identity: {rbac.display_name(persona)}")
+        if vm_mode():
+            st.info("Presenter-only demo. Persona switching is not user authentication.")
+        st.table(rbac.role_rows(persona))
+
+        if not rbac.personas_configured():
+            st.warning(
+                "Service principals are not provisioned, so every action runs as your "
+                "own sign-in. Run scripts/setup-governance.ps1 to enforce these roles."
+            )
+        for problem in rbac.credential_warnings():
+            st.error(problem)
 
     st.divider()
     st.header("Configuration control plane")
     if st.button("Refresh configuration from Azure", use_container_width=True):
-        invalidate_configuration(published=True)
+        clear_comparison_state()
         st.rerun()
     with st.expander("Endpoints"):
-        st.table([{"setting": k, "value": v} for k, v in endpoints_summary().items()])
+        endpoints = endpoints_summary()
+        if comparison:
+            endpoints = {
+                key: value for key, value in endpoints.items()
+                if key in {"App Configuration (production)", "Azure OpenAI", "Deployment"}
+                or (rag_available and key == "Azure AI Search")
+            }
+        st.table([{"setting": key, "value": value} for key, value in endpoints.items()])
 
 
 def show_denied(problem) -> None:
@@ -401,50 +448,68 @@ def show_denied(problem) -> None:
 
 
 st.title("Configurable agent responses without a code release")
-st.caption("Healthcare member-support demo. Use synthetic questions only; do not enter patient information.")
-render_mutation_notice()
 
-tab_experience, tab_knowledge, tab_governance, tab_audit = st.tabs(
-    ["Experience comparison", "Knowledge scope", "Governance and RBAC", "Audit trail"]
-)
+if comparison:
+    if configuration_editing:
+        tab_experience, tab_configuration = st.tabs(["Experience comparison", "Configuration"])
+    else:
+        tab_experience = st.container()
+else:
+    tab_experience, tab_knowledge, tab_governance, tab_audit = st.tabs(
+        ["Experience comparison", "Knowledge scope", "Governance and RBAC", "Audit trail"]
+    )
 
 
 with tab_experience:
-    st.markdown(
-        "This is what a customer would receive, read from the **production** store. "
-        "Change the assistant's wording by editing **Azure App Configuration**, or "
-        "point a profile at a different **prompt asset** (`response:v1` vs "
-        "`response:v2`). Select **Refresh configuration from Azure**, then "
-        "regenerate. No code change or redeploy is required."
-    )
-    st.caption(
-        "Streamlit invokes the response runtime through A2A 1.0. Configuration, "
-        "prompt rendering, Search filters, and model access stay inside the remote agent."
-    )
-    st.caption(
-        "Edits made on the Governance tab go to the draft store and do not appear "
-        "here until a release approver publishes them."
-    )
+    if not comparison:
+        st.markdown(
+            "This is what a customer would receive, read from the **production** store. "
+            "Change the assistant's wording by editing **Azure App Configuration**, or "
+            "point a profile at a different **prompt asset** (`response:v1` vs "
+            "`response:v2`). Select **Refresh configuration from Azure**, then "
+            "regenerate. No code change or redeploy is required."
+        )
+        st.caption(
+            "Streamlit invokes the response runtime through A2A 1.0. Configuration, "
+            "prompt rendering, Search filters, and model access stay inside the remote agent."
+        )
+        st.caption(
+            "Edits made on the Governance tab go to the draft store and do not appear "
+            "here until a release approver publishes them."
+        )
 
-    user_message = st.text_area("Member message", value=DEFAULT_MESSAGE, height=90)
-    use_grounding = st.checkbox("Use configured Search grounding", value=True)
-    st.caption("Grounding is used only when requested here AND enabled in the published profile. "
-               "Turning it off keeps the healthcare scenario, without reference-specific facts.")
+    grounded_request = st.toggle(
+        "Ground with AI Search", value=False, key="use_search_grounding",
+        on_change=clear_comparison_state,
+    ) if rag_available else False
+    user_message = st.text_area(
+        "Customer message",
+        value=("What documentation is required to establish medical necessity?" if grounded_request else DEFAULT_MESSAGE),
+        height=90,
+    )
 
     if st.button("Generate side-by-side comparison", type="primary"):
         try:
             baseline_profile = cached_profile("baseline", "production", persona)
             candidate_profile = cached_profile("candidate", "production", persona)
             if not baseline_profile or not candidate_profile:
-                st.error("One or both profiles are empty. Run scripts/seed-config.ps1 first.")
+                st.error(
+                    "The production baseline and candidate profiles must both be populated. "
+                    "Ask the platform team to add the approved synthetic settings in "
+                    "deployment/windows/README.md."
+                    if comparison else
+                    "One or both profiles are empty. Run scripts/seed-config.ps1 first."
+                )
             else:
                 with st.spinner("Creating two A2A response tasks..."):
                     client = configured_agent()
+                    request_options = {"grounded": True} if grounded_request else {}
                     baseline = client.invoke(
                         user_message,
                         "baseline",
                         grounded=use_grounding,
                         context_id=st.session_state.get("a2a_baseline_context_id"),
+                        **request_options,
                     )
                     st.session_state["a2a_baseline_context_id"] = baseline["context_id"]
                     candidate = client.invoke(
@@ -452,9 +517,11 @@ with tab_experience:
                         "candidate",
                         grounded=use_grounding,
                         context_id=st.session_state.get("a2a_candidate_context_id"),
+                        **request_options,
                     )
                     st.session_state["a2a_candidate_context_id"] = candidate["context_id"]
                     baseline_result = dict(baseline["result"])
+                    baseline_result["citations"] = baseline.get("citations", [])
                     baseline_result["a2a"] = {
                         "task_id": baseline["task_id"],
                         "context_id": baseline["context_id"],
@@ -463,6 +530,7 @@ with tab_experience:
                         "prompt_asset": baseline["prompt_asset"],
                     }
                     candidate_result = dict(candidate["result"])
+                    candidate_result["citations"] = candidate.get("citations", [])
                     candidate_result["a2a"] = {
                         "task_id": candidate["task_id"],
                         "context_id": candidate["context_id"],
@@ -481,7 +549,10 @@ with tab_experience:
             show_denied(denied)
         except A2AClientError as problem:
             st.error(f"The A2A response agent is unavailable: {problem}")
-            st.caption("Start it with `python a2a_server.py`, then try again.")
+            st.caption(
+                "Start the agent with the Windows launcher, then try again."
+                if comparison else "Start it with `python a2a_server.py`, then try again."
+            )
 
     results = st.session_state.get("results")
     if results:
@@ -501,7 +572,99 @@ with tab_experience:
         if col_c.button("Candidate is better", use_container_width=True):
             record_feedback(results["message"], "candidate")
             st.success("Recorded: candidate")
-        st.caption(f"Preferences are appended to {os.path.basename(FEEDBACK_PATH)} as A/B evidence.")
+        if not comparison:
+            st.caption(f"Preferences are appended to {os.path.basename(FEEDBACK_PATH)} as A/B evidence.")
+
+
+if comparison:
+    if configuration_editing:
+        with tab_configuration:
+            st.subheader("Live experience settings")
+            st.warning("Saves change the live profile for all VM users. No draft or approval step applies.")
+            saved_key = st.session_state.pop("live_config_saved", None)
+            if saved_key:
+                st.success(f"Saved to Azure: {saved_key}")
+            area = st.selectbox("Configuration area", options=["Experience", "Knowledge"], key="live_config_area") if rag_available else "Experience"
+            edit_prefix = cfg.KNOWLEDGE_PREFIX if area == "Knowledge" else cfg.EXPERIENCE_PREFIX
+            editable_keys = cfg.COMPARISON_KNOWLEDGE_KEYS if area == "Knowledge" else cfg.EDITABLE_KEYS
+            edit_profile = st.selectbox(
+                "Profile", options=cfg.PROFILE_LABELS, index=cfg.PROFILE_LABELS.index("candidate"),
+                key="live_config_profile",
+            )
+            edit_key = st.selectbox(
+                "Setting", options=editable_keys,
+                format_func=lambda short_key: f"{edit_prefix}{short_key}", key="live_config_key",
+            )
+            selected = (edit_profile, edit_key, edit_prefix)
+            loaded = st.session_state.get("live_config_loaded")
+            if loaded and loaded["target"] != selected:
+                st.session_state.pop("live_config_loaded")
+                loaded = None
+            try:
+                if st.button("Load current value", icon=":material/refresh:"):
+                    setting = (
+                        cfg.load_editable_setting(edit_profile, edit_key, prefix=cfg.KNOWLEDGE_PREFIX)
+                        if area == "Knowledge" else cfg.load_editable_setting(edit_profile, edit_key)
+                    )
+                    if loaded:
+                        previous_key = f"live_config_value:{edit_prefix}{edit_profile}:{edit_key}:{loaded['etag']}"
+                        st.session_state.pop(previous_key, None)
+                    loaded = {"target": selected, **setting}
+                    st.session_state["live_config_loaded"] = loaded
+                if loaded:
+                    with st.form("live_config_form"):
+                        value_key = f"live_config_value:{edit_prefix}{edit_profile}:{edit_key}:{loaded['etag']}"
+                        if edit_key == "prompt_asset":
+                            current_asset = loaded["value"]
+                            new_value = st.selectbox(
+                                "Prompt asset", options=cfg.COMPARISON_PROMPT_ASSETS,
+                                index=(cfg.COMPARISON_PROMPT_ASSETS.index(current_asset)
+                                       if current_asset in cfg.COMPARISON_PROMPT_ASSETS else None),
+                                key=value_key,
+                            )
+                        elif area == "Knowledge" and edit_key == "enabled":
+                            new_value = "true" if st.toggle("Enabled", value=loaded["value"] == "true", key=value_key) else "false"
+                        elif area == "Knowledge" and edit_key == "top_k":
+                            new_value = str(st.number_input(
+                                "Maximum results", min_value=1, max_value=20, step=1,
+                                value=int(loaded["value"]), key=value_key,
+                            ))
+                        elif area == "Knowledge" and edit_key in {"index", "query_mode", "citation_style"}:
+                            options = (list(rbac.approved_search_indexes()) if edit_key == "index" else
+                                       ["simple"] if edit_key == "query_mode" else ["inline", "footnote", "none"])
+                            new_value = st.selectbox(
+                                "New value", options=options,
+                                index=options.index(loaded["value"]) if loaded["value"] in options else None,
+                                key=value_key,
+                            )
+                        else:
+                            new_value = st.text_area(
+                                "New value", value=loaded["value"] or "", height=140,
+                                max_chars=cfg.MAX_EDIT_VALUE_LENGTH, key=value_key,
+                            )
+                        save = st.form_submit_button("Save to Azure", type="primary", icon=":material/save:")
+                    if save:
+                        if new_value == loaded["value"]:
+                            st.info("No changes to save.")
+                        else:
+                            update_setting = cfg.update_knowledge_setting if area == "Knowledge" else cfg.update_experience_setting
+                            saved = update_setting(
+                                label=edit_profile, short_key=edit_key, value=new_value,
+                                expected_etag=loaded["etag"],
+                            )
+                            st.session_state["live_config_loaded"] = {"target": selected, **saved}
+                            st.session_state["live_config_saved"] = f"{edit_profile} / {edit_prefix}{edit_key}"
+                            clear_comparison_state()
+                            st.rerun()
+            except (AccessDenied, CredentialError) as denied:
+                show_denied(denied)
+            except cfg.ConfigurationConflict as problem:
+                st.warning(str(problem))
+            except (ValueError, rbac.OperationDisabled) as problem:
+                st.error(str(problem))
+            except AzureError:
+                st.error("App Configuration could not complete the request. Check connectivity or whether the setting is locked.")
+    st.stop()
 
 
 with tab_knowledge:
