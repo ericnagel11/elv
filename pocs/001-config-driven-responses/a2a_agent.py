@@ -38,7 +38,7 @@ RESULT_MEDIA_TYPE = "application/vnd.contoso.experience-result+json"
 MAX_MESSAGE_CHARS = 8_000
 
 _FORBIDDEN_METADATA = frozenset(
-    cfg.EDITABLE_KEYS + cfg.EDITABLE_KNOWLEDGE_KEYS + ["store", "label"]
+    cfg.EDITABLE_KEYS + cfg.COMPARISON_KNOWLEDGE_KEYS + ["store", "label"]
 )
 _LOG = logging.getLogger(__name__)
 

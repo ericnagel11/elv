@@ -10,6 +10,7 @@ from typing import Callable
 
 import config as cfg
 import knowledge
+import rbac
 from prompt import generate_response
 
 ALLOWED_PROFILE_SLOTS = frozenset(cfg.PROFILE_LABELS)
@@ -35,7 +36,17 @@ def run_grounded(
     question: str,
     persona: str,
 ) -> dict:
+    rbac.require_grounding(scope.get("index") or knowledge.DEFAULTS["index"], persona)
     found = knowledge.search(question, scope, persona)
+    if rbac.comparison_mode() and not found["documents"]:
+        return {
+            "result": {
+                "text": "No matching source text was found in the configured knowledge scope. No model answer was generated.",
+                "messages": [], "latency_s": 0, "finish_reason": "no_sources",
+                "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0,
+            },
+            "found": found,
+        }
     inputs = {
         key: value
         for key, value in experience_profile.items()
@@ -103,7 +114,7 @@ class ConfiguredResponseRuntime:
         profile = self.profile_loader(profile_slot, "production", self.persona)
         if not profile:
             raise RuntimeError(f"The production {profile_slot} profile is empty.")
-        scope = knowledge.settings_from_profile(
+        scope = {"enabled": "false"} if rbac.comparison_mode() and not rbac.rag_enabled() else knowledge.settings_from_profile(
             self.knowledge_loader(profile_slot, "production", self.persona)
         )
         return ContextBinding(
@@ -120,9 +131,13 @@ class ConfiguredResponseRuntime:
         profile_slot: str = "baseline",
         grounded: bool = False,
     ) -> dict:
+        if rbac.comparison_mode() and (self.persona != "app" or (grounded and not rbac.rag_enabled())):
+            raise rbac.OperationDisabled("The requested runtime response mode is not enabled.")
         binding = self.bindings.get_or_create(
             context_id, profile_slot, self._resolve
         )
+        if grounded and rbac.comparison_mode() and not knowledge.is_enabled(binding.knowledge_scope):
+            raise ValueError("knowledge:enabled must be true for the selected grounded profile.")
         if grounded and knowledge.is_enabled(binding.knowledge_scope):
             bundle = run_grounded(
                 binding.profile,

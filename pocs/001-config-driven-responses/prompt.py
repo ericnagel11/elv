@@ -72,23 +72,30 @@ def render_messages(body: str, inputs: dict) -> list:
     return messages
 
 
+def completion_parameters(parameters: dict) -> dict:
+    """Select a request contract explicitly, independently of deployment names."""
+    profile = os.environ.get("ELV_OPENAI_REQUEST_PROFILE", "asset")
+    if profile == "gpt4o":
+        return {"max_tokens": parameters.get("max_tokens", parameters.get("max_completion_tokens", 3000))}
+    if profile != "asset":
+        raise ValueError("ELV_OPENAI_REQUEST_PROFILE must be asset or gpt4o.")
+    extra_body = {"max_completion_tokens": parameters.get("max_completion_tokens", 3000)}
+    if parameters.get("reasoning_effort"):
+        extra_body["reasoning_effort"] = parameters["reasoning_effort"]
+    return {"extra_body": extra_body}
+
+
 def generate_response(asset_id: str, inputs: dict) -> dict:
     front_matter, body = _load_asset(asset_id)
     parameters = (front_matter.get("model") or {}).get("parameters") or {}
     messages = render_messages(body, inputs)
+    request_parameters = completion_parameters(parameters)
 
     started = time.perf_counter()
-    # gpt-5 family models use max_completion_tokens (not max_tokens) and only the
-    # default temperature; extra_body keeps this working across openai SDK versions.
-    # That budget also covers hidden reasoning tokens, so reasoning_effort is sent
-    # alongside it to stop reasoning from consuming the whole allowance.
-    extra_body = {"max_completion_tokens": parameters.get("max_completion_tokens", 3000)}
-    if parameters.get("reasoning_effort"):
-        extra_body["reasoning_effort"] = parameters["reasoning_effort"]
     response = _aoai_client().chat.completions.create(
         model=os.environ["AZURE_OPENAI_DEPLOYMENT"],
         messages=messages,
-        extra_body=extra_body,
+        **request_parameters,
     )
     elapsed = time.perf_counter() - started
 

@@ -10,15 +10,18 @@ role-assignment conditions for App Configuration, so a role cannot be limited to
 a single label within a store. Microsoft guidance is to use a separate store for
 each environment that requires different permissions.
 
-Every call here runs under a persona's credential. An AccessDenied raised by
-this module is a real 403 returned by Azure, not an application-side check.
+Full-demo calls run under a persona's credential. An AccessDenied raised by
+this module is a real Azure 403. Comparison restrictions raise OperationDisabled
+locally, before any Azure request, and do not change the identity's Azure roles.
 """
 
 import os
+import re
 from functools import lru_cache
 
 from azure.appconfiguration import AzureAppConfigurationClient, ConfigurationSetting
-from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
+from azure.core import MatchConditions
+from azure.core.exceptions import ClientAuthenticationError, HttpResponseError, ResourceModifiedError, ResourceNotFoundError
 
 import rbac
 
@@ -48,6 +51,9 @@ EDITABLE_KEYS = [
     "prompt_asset",
 ]
 
+COMPARISON_PROMPT_ASSETS = ("response:v1", "response:v2")
+MAX_EDIT_VALUE_LENGTH = 2000
+
 EDITABLE_KNOWLEDGE_KEYS = [
     "enabled",
     "index",
@@ -56,6 +62,32 @@ EDITABLE_KNOWLEDGE_KEYS = [
     "query_mode",
     "citation_style",
 ]
+
+COMPARISON_KNOWLEDGE_KEYS = EDITABLE_KNOWLEDGE_KEYS + [
+    "title_field", "content_field", "url_field", "industry_field", "audience_field",
+    "status_field", "effective_date_field", "state_field", "source_field", "search_fields",
+]
+
+
+def validate_knowledge_value(short_key: str, value: str) -> None:
+    if short_key not in COMPARISON_KNOWLEDGE_KEYS:
+        raise rbac.OperationDisabled("This knowledge setting is not editable.")
+    if not isinstance(value, str) or "\x00" in value or len(value) > MAX_EDIT_VALUE_LENGTH:
+        raise ValueError("Knowledge values must be text within the editor limit.")
+    choices = {"enabled": {"true", "false"}, "query_mode": {"simple"},
+               "citation_style": {"inline", "footnote", "none"}}
+    if short_key in choices and value not in choices[short_key]:
+        raise ValueError(f"knowledge:{short_key} must be one of: {', '.join(sorted(choices[short_key]))}.")
+    if short_key == "index" and value not in rbac.approved_search_indexes():
+        raise rbac.OperationDisabled("Choose an index approved in the VM runtime configuration.")
+    if short_key == "top_k" and (not value.isascii() or not value.isdecimal() or not 1 <= int(value) <= 20):
+        raise ValueError("knowledge:top_k must be an integer from 1 to 20.")
+    if short_key.endswith("_field") or short_key == "search_fields":
+        fields = value.split(",") if short_key == "search_fields" else [value]
+        if any(field and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(/[A-Za-z][A-Za-z0-9_]*)*", field.strip()) for field in fields):
+            raise ValueError("Use Search field names, not queries or expressions, for field mappings.")
+        if short_key in {"title_field", "content_field", "search_fields"} and any(not field.strip() for field in fields):
+            raise ValueError(f"knowledge:{short_key} requires a field name.")
 
 
 class AccessDenied(Exception):
@@ -81,12 +113,16 @@ class CredentialError(Exception):
         super().__init__("Could not sign in as this identity.")
 
 
+class ConfigurationConflict(RuntimeError):
+    """A live setting changed or disappeared since the editor loaded it."""
+
+
 def store_endpoint(store: str) -> str:
     return os.environ.get(STORE_ENV[store], "")
 
 
 def draft_configured() -> bool:
-    return bool(store_endpoint("draft"))
+    return not rbac.comparison_mode() and bool(store_endpoint("draft"))
 
 
 @lru_cache(maxsize=16)
@@ -122,6 +158,14 @@ def _guard(operation: str, store: str, action):
 def load_profile(label: str, store: str = "production", persona=None,
                  prefix: str = EXPERIENCE_PREFIX) -> dict:
     """Return every key for a label under one prefix as a flat dict."""
+    allowed_prefixes = {EXPERIENCE_PREFIX}
+    if rbac.rag_enabled():
+        allowed_prefixes.add(KNOWLEDGE_PREFIX)
+    if rbac.comparison_mode() and (
+        store != "production" or persona != "app"
+        or label not in PROFILE_LABELS or prefix not in allowed_prefixes
+    ):
+        raise rbac.OperationDisabled("Only approved production comparison settings are available.")
 
     def _read():
         settings = _client(store, persona).list_configuration_settings(
@@ -138,10 +182,82 @@ def load_knowledge(label: str = DRAFT_LABEL, store: str = "production", persona=
     return load_profile(label, store, persona, prefix=KNOWLEDGE_PREFIX)
 
 
+def _require_editable_setting(label: str, short_key: str, prefix: str = EXPERIENCE_PREFIX) -> None:
+    if not rbac.config_editing_enabled():
+        raise rbac.OperationDisabled("Live configuration editing is not enabled.")
+    editable = EDITABLE_KEYS if prefix == EXPERIENCE_PREFIX else (
+        COMPARISON_KNOWLEDGE_KEYS if prefix == KNOWLEDGE_PREFIX and rbac.rag_enabled() else ()
+    )
+    if label not in PROFILE_LABELS or short_key not in editable:
+        raise rbac.OperationDisabled("Only enabled baseline/candidate settings can be edited.")
+
+
+def load_editable_setting(label: str, short_key: str, prefix: str = EXPERIENCE_PREFIX) -> dict:
+    """Read one existing live setting and its version under the runtime identity."""
+    _require_editable_setting(label, short_key, prefix)
+
+    def _read():
+        try:
+            setting = _client("production", "app").get_configuration_setting(
+                key=f"{prefix}{short_key}", label=label
+            )
+        except ResourceNotFoundError:
+            raise ConfigurationConflict("This setting is missing from the live profile.") from None
+        if not setting.etag:
+            raise ConfigurationConflict("The setting has no version; reload before editing.")
+        return {"value": setting.value, "etag": setting.etag}
+
+    return _guard(f"read the {label} {short_key} setting", "production", _read)
+
+
+def update_experience_setting(label: str, short_key: str, value: str, expected_etag: str) -> dict:
+    """Update an existing live value without overwriting another editor's version."""
+    _require_editable_setting(label, short_key)
+    if (not isinstance(value, str) or not value.strip() or "\x00" in value
+            or len(value) > MAX_EDIT_VALUE_LENGTH):
+        raise ValueError(f"The value must contain 1 to {MAX_EDIT_VALUE_LENGTH} characters without nulls.")
+    if short_key == "prompt_asset" and value not in COMPARISON_PROMPT_ASSETS:
+        raise ValueError("Choose response:v1 or response:v2 for the comparison prompt asset.")
+    return _update_live_setting(label, short_key, value, expected_etag, EXPERIENCE_PREFIX)
+
+
+def update_knowledge_setting(label: str, short_key: str, value: str, expected_etag: str) -> dict:
+    """Update only approved retrieval settings; the Search index itself is unchanged."""
+    _require_editable_setting(label, short_key, KNOWLEDGE_PREFIX)
+    validate_knowledge_value(short_key, value)
+    return _update_live_setting(label, short_key, value, expected_etag, KNOWLEDGE_PREFIX)
+
+
+def _update_live_setting(label: str, short_key: str, value: str, expected_etag: str, prefix: str) -> dict:
+    if not isinstance(expected_etag, str) or not expected_etag.strip() or expected_etag == "*":
+        raise ValueError("Load the current setting version before saving.")
+
+    def _update():
+        client = _client("production", "app")
+        try:
+            current = client.get_configuration_setting(
+                key=f"{prefix}{short_key}", label=label
+            )
+            if current.etag != expected_etag:
+                raise ConfigurationConflict("This setting changed. Reload it before saving again.")
+            if current.value == value:
+                return {"value": current.value, "etag": current.etag}
+            current.value = value
+            saved = client.set_configuration_setting(
+                current, etag=expected_etag, match_condition=MatchConditions.IfNotModified
+            )
+        except (ResourceModifiedError, ResourceNotFoundError):
+            raise ConfigurationConflict("This setting changed or was removed. Reload it before saving again.") from None
+        return {"value": saved.value, "etag": saved.etag}
+
+    return _guard(f"update the live {label} {short_key} setting", "production", _update)
+
+
 def set_value(short_key: str, value: str, store: str = "draft",
               label: str = DRAFT_LABEL, persona=None,
               prefix: str = EXPERIENCE_PREFIX):
     """Write one configuration key. Requires App Configuration Data Owner."""
+    rbac.require_full_demo("Configuration editing")
     setting = ConfigurationSetting(
         key=f"{prefix}{short_key}", label=label, value=value
     )
@@ -159,6 +275,7 @@ def publish_draft(persona=None) -> list:
     succeeds. The designer is denied on the first write, leaving production
     untouched.
     """
+    rbac.require_full_demo("Publishing")
     published = []
     found_any = False
     for prefix in (EXPERIENCE_PREFIX, KNOWLEDGE_PREFIX):
@@ -180,6 +297,7 @@ def _rewrite_first_value(store: str, label: str, persona) -> None:
     The write still requires Data Owner, so it proves permission without
     altering any configuration.
     """
+    rbac.require_full_demo("Permission testing")
     profile = load_profile(label, store=store, persona=persona)
     if not profile:
         raise RuntimeError(f"The {label} profile in the {store} store is empty.")
@@ -189,6 +307,7 @@ def _rewrite_first_value(store: str, label: str, persona) -> None:
 
 def probe(persona: str) -> list:
     """Attempt each governed operation and report what Azure actually allowed."""
+    rbac.require_full_demo("Permission testing")
     results = []
 
     def attempt(operation, action):

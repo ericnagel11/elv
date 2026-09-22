@@ -66,6 +66,35 @@ observe newly published configuration.
 
 ## Prerequisites
 
+### Windows VM / one-identity comparison
+
+Use the [Windows comparison runbook](../../deployment/windows/README.md) for the
+current Windows VM and existing GPT-4o deployment. It launches the UI and A2A
+agent on localhost with one explicit managed identity, external nonsecret JSON
+settings and no client-secret/developer fallback. The App Configuration store
+must contain both synthetic comparison profiles before responses can be generated.
+
+This mode disables persona switching, publishing, permission probes and audit.
+Search is off unless `ELV_ENABLE_RAG` is explicitly enabled with an approved
+endpoint/index allowlist. Configuration writes remain off unless the Windows runtime JSON explicitly
+sets `ELV_ENABLE_CONFIG_EDITING` to `"true"`. That option adds a **Configuration**
+tab for existing baseline/candidate experience values, using direct live updates
+with ETag conflict checks under the same managed identity. It does not simulate
+separate Azure roles or a draft approval workflow. Full governance remains the
+default outside comparison mode.
+
+Optional [existing-index RAG](../../deployment/windows/README.md#ground-responses-with-an-existing-search-index)
+maps `Content`, `Title`, `Status`, `State` and source metadata through
+`knowledge:*` settings. The first integration uses keyword retrieval from the
+approved `medical-policies-vector` index, not its vectors. Enable **Ground with
+AI Search** for sourced responses; edit the per-profile OData filter through
+**Configuration > Knowledge**. Azure resource tags do not become document
+filters automatically. This integration does not recreate or modify indexes.
+
+Users currently sign into the VM and view the PoC at localhost. Shared networking
+and HTTPS are deferred by the customer; the Windows runbook retains the proposed
+administrator steps for future use. Persistent Windows services are not installed.
+
 ### Red Hat VM / existing Azure services
 
 Use the shared [Red Hat hosting runbook](../../deployment/redhat/README.md).
@@ -137,6 +166,11 @@ The A2A server listens on `http://127.0.0.1:9999` by default and publishes its
 Agent Card at `/.well-known/agent-card.json`. Set `A2A_AGENT_URL` to use another
 endpoint. The local PoC endpoint is unauthenticated and bound to loopback;
 production must put it behind HTTPS and Entra OAuth/OIDC authorization.
+
+For GPT-4o, set `ELV_OPENAI_REQUEST_PROFILE=gpt4o`; this uses `max_tokens` without
+reasoning-only controls from the prompt assets. The Windows launcher enforces
+this profile. The default `asset` profile retains the existing reasoning-model
+request parameters. Restart both processes after changing runtime settings.
 
 ## Try the demo
 

@@ -54,3 +54,68 @@ was granted; scope/effective permission and compute attachment remain unverified
 
 Do not mark T009–T012 complete on source review alone. This feature does not
 create/seed/delete Azure resources; their readiness is an external prerequisite.
+
+## Follow-up — Windows comparison milestone (2026-09-16)
+
+User-approved scope: PoC001, one existing managed identity, GPT-4o, localhost
+viewing first. The full Red Hat/multi-persona acceptance gates above are not
+replaced or marked complete by this reduced Windows milestone.
+
+- [X] T017 Add opt-in runtime-only credentials and backend restrictions for
+  configuration writes, permission probes, draft/knowledge reads and audit.
+- [X] T018 Add GPT-4o request formatting without reasoning-only parameters;
+  preserve default asset-driven model requests and test both contracts.
+- [X] T019 Render comparison-only UI with generation, metrics, provenance,
+  feedback and refresh; test that disabled tab bodies do not execute.
+- [X] T020 Add Windows foreground launcher, external JSON validation, fixed
+  loopback listeners and preserved proxy/CA configuration; document operations.
+- [X] T021 Complete integrated VM dependency, PoC and shared-hosting regression
+  checks; record resolved versions and editor/diff validation.
+- [X] T022 Prepare protected local runtime/state, validate settings, start both
+  localhost components and verify process health/listeners on Windows.
+- [X] T023 Obtain explicit approval and initialize the 12 synthetic profile
+  settings using the configured runtime identity; verify create/read access
+  on the selected store. No automatic startup writes or role changes.
+- [ ] T024 Verify real GPT-4o baseline/candidate responses and configuration
+  refresh against populated Azure profiles; retain synthetic acceptance evidence.
+  User confirmed two successful comparison responses on 2026-09-16; refresh
+  after a deliberate approved profile change remains unverified.
+- [ ] T025 Separately approve/design private-IP HTTPS and persistent Windows
+  hosting, then verify private viewer access, WebSockets and reboot recovery.
+  Deferred by the customer on 2026-09-17. Retain the Windows runbook handoff for
+  future use; current users sign into the VM and use localhost. No network changes.
+- [X] T026 Add a separate preview-first, create-only configuration initializer;
+  test identity selection, approval gates, collisions, repeated runs and partial
+  failure without overwrites or rollback. Document preview and approved apply.
+
+## Follow-up — Local live configuration editor (2026-09-17)
+
+- [X] T027 Add explicitly enabled, version-conditional editing of existing
+  baseline/candidate experience settings with the same runtime managed identity;
+  preserve disabled broad writes, draft publishing, audit and other personas.
+- [X] T028 Add the Configuration tab with load/save, bounded prompt choices,
+  conflict feedback and cleared comparison state after a successful save; test
+  backend, UI and runtime JSON opt-in behavior without Azure writes.
+- [X] T029 Enable editing in the local runtime configuration, restart the UI,
+  verify the tab/real setting load and record integrated regression results.
+- [ ] T030 Verify a user-chosen live save and subsequent response refresh. Do
+  not change customer configuration or spend inference quota just to deploy UI.
+
+## Follow-up — Existing-index RAG (2026-09-18)
+
+- [X] T031 Confirm the selected existing index and content-use approval; inspect
+  supplied fields and verify text/metadata/filter capabilities with bounded
+  read-only queries, without schema changes or expanded permissions.
+- [X] T032 Add opt-in approved-index RAG and configurable field mappings, exact
+  filters, bounded excerpts and no-model behavior for empty results; preserve
+  the original comparison and full-governance contracts with offline tests.
+- [X] T033 Add the grounding toggle, source citations and Knowledge configuration
+  editor with typed controls and version-safe saves; validate UI/context behavior.
+- [X] T034 Extend the existing initializer with a knowledge-only preview/apply
+  path; obtain explicit approval and create/read back the 32 knowledge settings
+  without modifying experience values or the Search index.
+- [X] T035 Restart both local components and run the approved live GPT-4o RAG
+  comparison; verify two responses with source citations and record the evidence.
+- [X] T036 Finalize the existing-index configuration/filter runbook and final
+  deployment diagnostics. Vector/hybrid/semantic implementation is outside this
+  initial keyword-RAG milestone.

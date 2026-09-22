@@ -1,7 +1,9 @@
+import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from experience_runtime import ConfiguredResponseRuntime
+import rbac
+from experience_runtime import ConfiguredResponseRuntime, run_grounded
 
 
 class ConfiguredResponseRuntimeTests(unittest.TestCase):
@@ -73,6 +75,47 @@ class ConfiguredResponseRuntimeTests(unittest.TestCase):
             runtime.invoke("context-1", "hello", "draft")
 
         self.assertEqual(self.profile_loads, [])
+
+    @patch.dict(os.environ, {"ELV_HOSTING_MODE": "azure-vm", "ELV_DEMO_MODE": "comparison"})
+    @patch("experience_runtime.run_variant")
+    def test_comparison_skips_knowledge_and_pins_until_refresh(self, run_variant):
+        run_variant.side_effect = lambda profile, message: {"text": profile["tone"]}
+        knowledge_loader = Mock(side_effect=AssertionError("knowledge read"))
+        runtime = ConfiguredResponseRuntime(
+            profile_loader=self.load_profile, knowledge_loader=knowledge_loader
+        )
+        first = runtime.invoke("context-1", "hello")
+        self.current_profile["tone"] = "formal"
+        self.assertEqual(runtime.invoke("context-1", "again")["result"]["text"], "warm")
+        refreshed = runtime.invoke("context-2", "hello")
+        self.assertEqual(refreshed["result"]["text"], "formal")
+        self.assertNotEqual(first["configuration_revision"], refreshed["configuration_revision"])
+        self.assertEqual(first["found"]["documents"], [])
+        knowledge_loader.assert_not_called()
+
+    @patch.dict(os.environ, {"ELV_HOSTING_MODE": "azure-vm", "ELV_DEMO_MODE": "comparison"})
+    @patch("experience_runtime.generate_response")
+    @patch("experience_runtime.knowledge.search")
+    def test_comparison_rejects_grounding_before_configuration_or_model_calls(self, search, generate):
+        runtime = self.runtime()
+        with self.assertRaises(rbac.OperationDisabled):
+            runtime.invoke("context-1", "hello", grounded=True)
+        with self.assertRaises(rbac.OperationDisabled):
+            run_grounded({}, {"enabled": "true"}, "hello", "app")
+        runtime.persona = "approver"
+        with self.assertRaises(rbac.OperationDisabled):
+            runtime.invoke("context-2", "hello")
+        self.assertEqual(self.profile_loads, [])
+        search.assert_not_called()
+        generate.assert_not_called()
+
+    @patch.dict(os.environ, {"ELV_HOSTING_MODE": "azure-vm", "ELV_DEMO_MODE": "comparison"})
+    @patch("experience_runtime.run_variant")
+    def test_comparison_empty_profile_is_not_replaced_by_local_defaults(self, run_variant):
+        self.current_profile = {}
+        with self.assertRaisesRegex(RuntimeError, "baseline profile is empty"):
+            self.runtime().invoke("context-1", "hello")
+        run_variant.assert_not_called()
 
 
 if __name__ == "__main__":

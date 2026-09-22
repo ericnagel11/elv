@@ -44,11 +44,12 @@ AACHttpRequest
 
 
 def workspace_configured() -> bool:
-    return bool(os.environ.get(WORKSPACE_ENV))
+    return not rbac.comparison_mode() and bool(os.environ.get(WORKSPACE_ENV))
 
 
 def run_query(query: str):
     """Run a KQL query and return (columns, rows). Raises on query failure."""
+    rbac.require_full_demo("Audit")
     client = LogsQueryClient(rbac.service_credential("audit"))
     if hosting.vm_mode():
         columns, rows = [], []
