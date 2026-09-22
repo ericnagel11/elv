@@ -16,6 +16,7 @@ from prompt import generate_response
 
 ALLOWED_PROFILE_SLOTS = frozenset(cfg.PROFILE_LABELS)
 GROUNDED_ASSET = "response:v3"
+INSUFFICIENT_EVIDENCE_MARKER = "NO_SUPPORTED_ANSWER"
 SEARCH_DISABLED_NOTE = (
     "Search grounding is disabled by configuration. "
     "This response uses the experience prompt without Search references."
@@ -101,7 +102,17 @@ def run_grounded(
     )
     result = generate_response(GROUNDED_ASSET, inputs)
     citation_status = "not_checked"
-    if inputs["citation_style"] == "none":
+    if (result.get("text") or "").strip() == INSUFFICIENT_EVIDENCE_MARKER:
+        citation_status = "insufficient_evidence"
+        result = {
+            **result,
+            "text": (
+                "The retrieved sources do not contain enough information to answer this question. "
+                "Review your denial notice or contact member services through your plan's official secure channel."
+            ),
+            "finish_reason": "insufficient_evidence",
+        }
+    elif inputs["citation_style"] == "none":
         citation_status = "not_requested"
     elif inputs["citation_style"] == "inline" and found["documents"] and (result.get("text") or "").strip():
         citation_status = _inline_citation_status(result.get("text") or "", len(found["documents"]))

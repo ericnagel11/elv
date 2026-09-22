@@ -106,6 +106,16 @@ class HealthcarePromptTests(unittest.TestCase):
                 if style != "inline":
                     self.assertNotIn("immediately after each statement", system)
 
+    def test_v3_has_an_explicit_insufficient_evidence_outcome_for_every_citation_style(self):
+        from experience_runtime import INSUFFICIENT_EVIDENCE_MARKER
+
+        for style in ("inline", "footnote", "none"):
+            with self.subTest(style=style):
+                system = self.render("response:v3", citation_style=style)[0]["content"]
+                self.assertIn(f"return exactly {INSUFFICIENT_EVIDENCE_MARKER} and nothing else", system)
+                self.assertIn("no acknowledgement, citations, bullets, closing, or general advice", system)
+                self.assertIn("This exception takes priority over the experience guidelines", system)
+
     def test_v3_empty_references_are_explicitly_unavailable(self):
         system = self.render("response:v3", context="")[0]["content"]
         self.assertIn("No reference material was retrieved", system)

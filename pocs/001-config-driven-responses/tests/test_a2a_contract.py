@@ -124,7 +124,7 @@ class A2AContractTests(unittest.TestCase):
             self.assertEqual(search_client.return_value.search.call_args.kwargs["filter"], settings["filter"])
             generate.assert_not_called()
 
-    def test_uncited_answer_is_withheld_with_applied_citation_provenance(self):
+    def test_unsupported_and_uncited_outcomes_keep_applied_citation_provenance(self):
         runtime = ConfiguredResponseRuntime(
             profile_loader=Mock(return_value={"tone": "warm", "prompt_asset": "response:v2"}),
             knowledge_loader=Mock(return_value={
@@ -142,16 +142,22 @@ class A2AContractTests(unittest.TestCase):
                     "industry": "", "status": "Reviewed", "effective_date": ""}
         with patch.dict(os.environ, environment, clear=True), \
                 patch("knowledge.search", return_value={"documents": [document], "notes": [], "index": "medical-policies-vector"}), \
-                patch("experience_runtime.generate_response", return_value={
-                    "text": "UNCITED_MODEL_DRAFT", "finish_reason": "stop", "completion_tokens": 8,
-                }) as generate:
-            response = asyncio.run(client.invoke_async(DEFAULT_QUESTION, "candidate", grounded=True))
-            self.assertEqual(response["citation_style"], "inline")
-            self.assertEqual(response["citation_status"], "missing")
-            self.assertEqual(response["result"]["finish_reason"], "citation_validation_failed")
-            self.assertNotIn("UNCITED_MODEL_DRAFT", response["result"]["text"])
-            self.assertEqual(len(response["citations"]), 1)
-            generate.assert_called_once()
+                patch("experience_runtime.generate_response") as generate:
+            for draft, status, finish in (
+                ("UNCITED_MODEL_DRAFT", "missing", "citation_validation_failed"),
+                ("NO_SUPPORTED_ANSWER", "insufficient_evidence", "insufficient_evidence"),
+            ):
+                with self.subTest(status=status):
+                    generate.reset_mock()
+                    generate.return_value = {"text": draft, "finish_reason": "stop", "completion_tokens": 8}
+                    response = asyncio.run(client.invoke_async(DEFAULT_QUESTION, "candidate", grounded=True))
+                    self.assertEqual(response["citation_style"], "inline")
+                    self.assertEqual(response["citation_status"], status)
+                    self.assertEqual(response["result"]["finish_reason"], finish)
+                    self.assertNotIn(draft, response["result"]["text"])
+                    self.assertEqual(response["result"]["messages"], [])
+                    self.assertEqual(len(response["citations"]), 1)
+                    generate.assert_called_once()
 
 
 if __name__ == "__main__":

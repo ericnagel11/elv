@@ -411,6 +411,21 @@ answers. All modes prohibit clinical advice and requests for PHI. Repository
 healthcare documents are synthetic references, not real coverage/medical advice;
 prompt sample metadata is not automatically applied as runtime configuration.
 
+With retrieved references but insufficient evidence, v3 returns the exact
+`NO_SUPPORTED_ANSWER` marker. The runtime replaces it with a safe member-facing
+message and reports `insufficient_evidence`, not a citation-format failure.
+Additional text cannot use that marker to bypass inline citation validation.
+Substantive inline answers without valid numbered markers remain withheld;
+valid marker numbers do not prove factual support or source relevance. There is
+no automatic model retry and no fabricated citation. Existing task results are
+not rewritten by a prompt update.
+
+The default appeals question requires references that actually describe an
+appeals process. Retrieving medical-policy documents alone does not establish
+that the existing index contains that information. Review source relevance and
+the approved knowledge scope; do not weaken citations or remove filters just to
+force an answer.
+
 ### RBAC and permission checks
 
 Select **Acting as** and use **Governance and RBAC**:

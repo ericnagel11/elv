@@ -215,6 +215,46 @@ class ComparisonRagPolicyTests(unittest.TestCase):
 
     @patch("experience_runtime.generate_response")
     @patch("experience_runtime.knowledge.search")
+    def test_explicit_insufficient_evidence_is_not_a_citation_failure(self, search, generate):
+        search.return_value = {
+            "documents": [{"title": "Unrelated synthetic policy", "content": "No appeal process here.",
+                           "industry": "", "status": "Reviewed", "effective_date": ""}],
+            "notes": [], "index": "medical-policies-vector",
+        }
+        generate.return_value = {
+            "text": "  NO_SUPPORTED_ANSWER\n", "finish_reason": "stop", "completion_tokens": 4,
+        }
+        bundle = run_grounded({}, EXISTING_INDEX_SETTINGS, "How can I appeal?", "app")
+        self.assertEqual(bundle["citation_status"], "insufficient_evidence")
+        self.assertEqual(bundle["result"]["finish_reason"], "insufficient_evidence")
+        self.assertIn("do not contain enough information", bundle["result"]["text"])
+        self.assertNotIn("NO_SUPPORTED_ANSWER", bundle["result"]["text"])
+        self.assertNotIn("citation", bundle["result"]["text"])
+        self.assertEqual(bundle["result"]["completion_tokens"], 4)
+        self.assertEqual(bundle["found"], search.return_value)
+        generate.assert_called_once()
+
+    @patch("experience_runtime.generate_response")
+    @patch("experience_runtime.knowledge.search")
+    def test_insufficient_evidence_marker_cannot_bypass_citation_checks_for_extra_text(self, search, generate):
+        search.return_value = {
+            "documents": [{"title": "Synthetic policy", "content": "Example reference.",
+                           "industry": "", "status": "Reviewed", "effective_date": ""}],
+            "notes": [], "index": "medical-policies-vector",
+        }
+        for text in ("NO_SUPPORTED_ANSWER. You have 90 days to appeal.",
+                     "You have 90 days to appeal. NO_SUPPORTED_ANSWER"):
+            with self.subTest(text=text):
+                generate.reset_mock()
+                generate.return_value = {"text": text, "finish_reason": "stop"}
+                bundle = run_grounded({}, EXISTING_INDEX_SETTINGS, "question", "app")
+                self.assertEqual(bundle["citation_status"], "missing")
+                self.assertEqual(bundle["result"]["finish_reason"], "citation_validation_failed")
+                self.assertNotIn("90 days", bundle["result"]["text"])
+                generate.assert_called_once()
+
+    @patch("experience_runtime.generate_response")
+    @patch("experience_runtime.knowledge.search")
     def test_valid_inline_markers_and_none_mode_leave_model_text_unchanged(self, search, generate):
         search.return_value = {
             "documents": [{"title": "Synthetic policy", "content": "Example reference.",
