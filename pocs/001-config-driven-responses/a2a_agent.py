@@ -53,8 +53,8 @@ def build_agent_card(base_url: str) -> AgentCard:
         ),
         tags=["customer-experience", "configuration", "grounding"],
         examples=[
-            "Where is my order?",
-            "How long do I have to return something?",
+            "I received a denial notice for my health insurance claim. How can I appeal it?",
+            "Where can I find the instructions for submitting a health insurance appeal?",
         ],
         input_modes=["text/plain"],
         output_modes=["text/plain", RESULT_MEDIA_TYPE],

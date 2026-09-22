@@ -6,6 +6,7 @@ azure-identity>=1.17
 azure-appconfiguration>=1.6
 azure-monitor-query>=1.4,<3
 azure-search-documents>=11.5,<12
+azure-storage-blob>=12.19,<13
 openai>=1.40
 Jinja2>=3.1
 PyYAML>=6.0

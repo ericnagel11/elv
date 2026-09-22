@@ -5,10 +5,12 @@ pending. This is a trusted presenter deployment, not a production multi-user app
 
 Both UIs are headless web applications. No server desktop or GPU is needed.
 Application execution, package installation and tests below happen **on the VM**.
-Only the browser/SSH client runs on the approved workstation. The Red Hat-only
-effort estimate is 2–3 engineering days (allow 4), assuming Azure prerequisites
-are ready. Tenant/resource migration and substantial network remediation are
-separate work.
+Only the browser/SSH client runs on the approved workstation in this runbook.
+The launcher is **Linux-only** and does not start applications on Windows.
+For a separately approved Windows development run, use the
+[PoC001 application instructions](../../pocs/001-config-driven-responses/README.md#run-on-windows-development).
+PoC001 defaults to Blob application history with **no Log Analytics dependency**;
+PoC002 retains its required legacy Log Analytics configuration.
 
 ## Boundaries: read before installing
 
@@ -59,8 +61,10 @@ items still need operator review; an exit 0 is **not** Azure deployment approval
 Separately confirm:
 
 - Approved package downloads and SSH reachability; no credential-bearing URLs.
-- VM DNS/routing/HTTPS to App Configuration, OpenAI, Search, Language and Monitor;
-  private endpoint DNS/peering as required. Bootstrap also needs Blob access.
+- VM DNS/routing/HTTPS to App Configuration, OpenAI and Search, plus Blob for
+  PoC001 history, Language for PoC002, and Monitor for PoC002 or explicit PoC001
+  Log Analytics mode; private endpoint DNS/peering as required. Knowledge
+  onboarding also needs its separately approved Blob path.
 - IMDS access at 169.254.169.254, bypassing proxies. Merge the examples' NO_PROXY
   values with approved existing bypasses; do not replace required enterprise CA
   or proxy configuration. Browser-to-VM connectivity does not prove Azure access.
@@ -71,21 +75,25 @@ Separately confirm:
 ## 2. Ready Azure resources and permissions (administrator)
 
 Supply an approved mapping before starting services. Runtime environment files
-are deliberately incomplete templates and fail validation until filled in.
+are deliberately incomplete templates: required normal settings fail validation
+until filled in; PoC001 Blob settings instead use the warning boundary below.
 
 | Dependency | Required mapping / preparation |
 |---|---|
-| App Configuration | Distinct live/draft stores for each PoC, endpoints **and** full ARM IDs. Do not share unchanged stores between PoCs: baseline keys collide. |
+| App Configuration | Distinct live/draft stores for each PoC and their endpoints. Full audit ARM IDs are required only for PoC002 or PoC001 explicit Log Analytics mode. Do not share unchanged stores between PoCs: baseline keys collide. |
 | OpenAI | Existing compatible Azure OpenAI endpoint, deployment name, model/API version and sufficient quota. Both PoCs may share one deployment. A Foundry project URL is not a substitute for the account endpoint used by this code. |
-| Search | Existing suitable service, correct schemas/content and configured aliases. Four initial indexes combined (1 + 3), plus version/alias headroom; one Free service is insufficient. Preserve each language's analyzer. |
-| Blob | Approved PoC-only containers and working indexers; prefer Search-to-Blob managed identity on a suitable tier. No storage key fallback is implemented by hosting. |
+| Search | Existing suitable service, approved content and compatible schemas/indexes or aliases. The repository sample layout uses four indexes combined (1 + 3); do not build/rebuild them automatically on customer services. Preserve existing index selection and each language's analyzer. |
+| Knowledge Blob | Approved PoC-only source containers and working indexers; prefer Search-to-Blob managed identity on a suitable tier. Keep history separate from indexed knowledge. No storage key fallback is implemented by hosting. |
 | Language | PoC002 custom-subdomain endpoint supporting Entra authentication and language detection. Required for the selected full demo. |
-| Audit | Workspace customer UUID, resource logs AACAudit/AACHttpRequest enabled for each store, resource-context query authorization and ingestion verified. |
+| PoC001 history (default) | Private, owner-precreated `poc001-config-history` container at `https://tenxengbenefitaistandard.blob.core.windows.net`, separate writer and reader identities, approved VM-to-Blob access. No workspace UUID, resource-log ARM IDs or Monitor queries required. |
+| Legacy Log Analytics | Required for PoC002 regardless of `ELV_AUDIT_BACKEND`; optional for PoC001 only with `ELV_AUDIT_BACKEND=loganalytics`. Existing workspace customer UUID, both store ARM IDs, AACAudit/AACHttpRequest diagnostics, resource-context query authorization and verified ingestion. |
 | Identity | Distinct managed-identity **client IDs**, not principal/object IDs, attached to the target-tenant VM; full resource IDs/object IDs retained separately for administrators. |
 
 Create/reuse four persona identities for 001 and five for 002, **plus a dedicated
-audit identity for each PoC**. Do not grant one identity all personas' rights.
-No identity creation or role-assignment commands are run by the installer.
+audit reader identity for each PoC**. PoC001 Blob mode additionally needs an
+explicitly selected writer UAMI distinct from every persona and the audit reader.
+Do not grant one identity all personas' rights. No identity creation or
+role-assignment commands are run by the installer or application.
 
 | Identity | Scope and minimum intended permissions |
 |---|---|
@@ -95,7 +103,9 @@ No identity creation or role-assignment commands are run by the installer.
 | Approver | Data Owner on the two PoC-only stores |
 | App | Data Reader on live only; Cognitive Services OpenAI User on approved OpenAI resource; Cognitive Services Language Reader on Language for 002 |
 | Querying personas | Search Index Data Reader for approved PoC indexes, verifying alias access and role scope; never broad access to unrelated confidential content |
-| Audit | Resource-context log-query rights only on the two approved stores, with the workspace access-control mode configured to support them |
+| PoC001 history writer (`ELV_AUDIT_BLOB_WRITER_CLIENT_ID`) | Storage Blob Data Contributor on **only the dedicated history container** |
+| PoC001 history reader (`ELV_MI_AUDIT_CLIENT_ID`) | Storage Blob Data Reader on **only that history container**; no upload grant |
+| Legacy audit reader (PoC002; PoC001 opt-in) | Resource-context log-query rights only on the two approved stores, with the workspace access-control mode configured to support them |
 | Search indexer identity | Storage Blob Data Reader on assigned PoC containers |
 
 Use direct resource assignments where appropriate and allow propagation. Do not
@@ -104,15 +114,56 @@ setup separately using their approved MFA workflow. Direct VM managed-identity
 access assumes the resource tenant is compatible; changing AZURE_TENANT_ID does
 not move a VM identity into another tenant.
 
-VM audit calls use resource-context queries, not broad workspace queries. If the
-existing workspace/table setup does not permit that mode, stop and arrange an
-approved logging design. Do not grant workspace-wide read merely to suppress a
-403. An empty audit tab is not proof diagnostics are working; trigger an approved
-PoC write/denial and confirm its arrival after ingestion delay.
+### PoC001 Blob history boundary
 
-This slice expects the appropriate demo configuration, aliases, documents and
-diagnostics to **already exist**. It does not decide whether to reseed repository
-samples or transfer custom old-tenant state. Confirm that decision separately.
+Set `ELV_AUDIT_BACKEND=blob` (also the default when absent),
+`ELV_AUDIT_BLOB_ACCOUNT_URL`, `ELV_AUDIT_BLOB_CONTAINER` and the separate
+`ELV_AUDIT_BLOB_WRITER_CLIENT_ID` using [poc001.env.example](poc001.env.example).
+Reuse `ELV_MI_AUDIT_CLIENT_ID` for reads. The account URL is the standard HTTPS
+Blob hostname, without a SAS/query, embedded credentials or container path.
+The owner must precreate/approve the **private** container and scoped grants;
+neither service creates/overwrites containers or changes cloud permissions.
+Do not grant account-, subscription- or root-wide access for this feature.
+Prefixes are not RBAC isolation. See the
+[storage history prerequisites](../storage/README.md#poc001-application-change-history).
+
+History is best-effort application-recorded before/after configuration evidence,
+not a compliance audit system. Missing/invalid Blob settings, an invalid or
+colliding writer UUID, denied storage access or timeout must produce a visible
+warning without replacing the App Configuration outcome or blocking generation.
+There is no automatic Log Analytics fallback, local outbox or historical backfill.
+Normal persona/audit-reader UUID validation, App Configuration authorization and
+conflict checks still apply; fail-open history does not bypass them.
+
+One create-only JSON block blob is attempted per event. It is **not immutable**:
+Contributor can overwrite/delete blobs, and a crash between configuration write
+and history upload can leave a gap. Only app operations are covered, not direct
+Portal/CLI edits, seeds or provisioning. Persona/client ID describes the acting
+service credential, not an authenticated human. Store no PHI, tokens or secrets
+in configuration; before/after values are recorded. The history reader supports
+bounded selections and CSV export; unavailable/partial results must be visible,
+not presented as a complete record. Retention remains an owner-managed policy.
+
+Deploy the matching application/UI/mutation integration and verify warnings,
+before/after display and CSV in acceptance; the helper modules and launcher
+change alone do not establish end-to-end history. New code/dependencies and
+environment settings need deployment and service restart. Existing App
+Configuration values require a reviewed migration; no automatic reseed occurs.
+
+### Legacy Log Analytics only
+
+VM Log Analytics calls use resource-context queries, not broad workspace queries.
+If the existing workspace/table setup does not permit that mode, arrange an
+approved logging design. Do not grant workspace-wide read merely to suppress a
+403. Validate ingestion with an approved PoC write/denial. This applies to
+PoC002 regardless of the backend environment value, and to PoC001 only on
+explicit opt-in; Blob failure never switches modes automatically.
+
+Demo configuration, compatible indexes, approved documents and the chosen
+history prerequisites must be supplied by their owners. Do not run the legacy
+provisioners against customer services to fill gaps. Review any PoC001 seed
+migration using the [scoped seed behavior](../../pocs/001-config-driven-responses/README.md#seed-and-migrate-existing-configuration)
+before applying it; seed changes are outside application history.
 
 ## 3. Prepare the two Python environments
 
@@ -190,12 +241,18 @@ Use the structure of [poc001.env.example](poc001.env.example) and
 [poc002.env.example](poc002.env.example). Values are literal systemd KEY=value
 assignments, **not shell commands**; no export, command substitution or dotenv
 interpolation. Never source the template in a shell. Configure distinct stores,
-all required endpoints, identity IDs, resource IDs and existing deployment name.
+all required endpoints, identity IDs and existing deployment name. Supply
+workspace UUID and audit resource IDs only for the LA paths described above.
 Keep placeholder values out of the live configuration.
 
 The launcher forces azure-vm mode regardless of environment-file settings,
-validates the full-demo settings without token requests, and uses only explicit
-managed identities. It never reads checkout dotenv or persona credential files.
+validates normal endpoint/tenant/model/state settings and the persona/audit-reader
+map without token requests, and uses only explicit managed identities. It checks
+the workspace UUID and both audit ARM IDs only for PoC001 explicit LA or PoC002.
+It deliberately does **not** validate PoC001 Blob URL/container/writer at startup;
+those failures belong to the best-effort history warning boundary. Backend typos
+also belong to that boundary, not an implicit LA switch. It never reads checkout
+dotenv or persona credential files.
 The tenant ID is documented/format-validated metadata, **not a token-tenant
 override**; administrators must verify actual VM/resource placement.
 
@@ -252,11 +309,15 @@ Record outcomes on the VM; do not mark the migration complete without:
 2. Real RBAC outcomes: viewer cannot write; designer/market owner cannot publish;
    approver can publish; app cannot read drafts or write either store. The
    market-owner locale limitation remains visible, not falsely fixed.
-3. Audit events arrive under the correct identities/resources; audit identity
-   cannot read unrelated resources. Separate a 401/credential failure from the
-   intentional 403/authorization denials and from ingestion/role propagation.
-4. No local secrets/operator CLI token dependency. A missing identity fails
-   rather than borrowing another credential. Missing Search or Language is not
+3. PoC001 Blob mode works without a workspace: an approved app draft change and
+  publication show before/after history and CSV; the separate reader can read
+  but not upload, and neither identity has unrelated-container grants. Check
+  warning behavior with mocks first, not by revoking customer roles. Legacy LA
+  events (PoC002 and PoC001 opt-in) arrive under the intended identities/resources.
+  Separate credential failure from denial and ingestion/role propagation.
+4. No local secrets/operator CLI token dependency. Missing persona/audit-reader
+  identities fail rather than borrowing another credential; a missing PoC001
+  history writer warns without blocking configuration. Missing Search or Language is not
    accepted as a full-demo success merely because the UI degrades gracefully.
 5. VM reboot (approved maintenance window): all services recover, all health
    checks pass, and presenters can reconnect. No unrelated service/data changed.
@@ -278,8 +339,12 @@ sudo systemctl restart elv-poc001-agent elv-poc001-ui elv-poc002-ui
 - 429/model error: check deployment compatibility and token/request quotas.
 - Search failure: verify actual index/alias schema and capacity; no forced API
   downgrade. The code's 2026-04-01 Search API is documented stable.
-- Language unavailable/audit empty: inspect their access/diagnostic prerequisites;
-  health checks alone cannot validate either service.
+- PoC001 history unavailable/warning: inspect the backend, dedicated private
+  container, separate writer/reader configuration and approved role/network path.
+  Do not create a workspace or broaden grants as a fallback. Empty means no
+  recorded events in the selection, not that no configuration changes occurred.
+- Language unavailable/legacy LA empty: inspect the applicable access/diagnostic
+  prerequisites; health checks alone cannot validate either service.
 
 ## 9. Update, rollback and stop
 

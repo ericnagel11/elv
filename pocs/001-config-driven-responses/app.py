@@ -13,18 +13,23 @@ import os
 import csv
 import logging
 import datetime as dt
+import hashlib
+import json
 
 import streamlit as st
 import textstat
 from hosting import load_environment, vm_mode
 
 import audit
+import change_history
 import config as cfg
 import knowledge
 import rbac
 from a2a_client import A2AClientError, ConfiguredAgentClient
 from config import AccessDenied, CredentialError, endpoints_summary, load_profile
+from config_editor import render_search_form, reset_results
 from experience_runtime import GROUNDED_ASSET, run_grounded
+from search_settings import DEFAULT_QUESTION
 
 # A denied request returns an error body that is not JSON, which makes the Azure
 # SDK log a noisy "failsafe deserialization" warning with a traceback. The SDK
@@ -41,9 +46,7 @@ FEEDBACK_PATH = os.path.join(
     os.environ.get("ELV_STATE_DIRECTORY", os.path.dirname(__file__)), "feedback.csv"
 )
 REQUIRED_ENV = ["AZURE_APPCONFIG_ENDPOINT", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT"]
-DEFAULT_MESSAGE = "Where is my order? It was supposed to arrive yesterday and I need it for a gift."
-
-DEFAULT_QUESTION = "How long do I have to return something, and is there a fee?"
+DEFAULT_MESSAGE = DEFAULT_QUESTION
 
 
 @st.cache_data(show_spinner=False)
@@ -59,6 +62,124 @@ def cached_knowledge(label: str, store: str, persona: str) -> dict:
 @st.cache_resource(show_spinner=False)
 def configured_agent() -> ConfiguredAgentClient:
     return ConfiguredAgentClient()
+
+
+def invalidate_configuration(published=False):
+    cached_profile.clear()
+    cached_knowledge.clear()
+    reset_results(st.session_state, published=published)
+    st.session_state.pop("history_page", None)
+
+
+def finish_mutation(action, *, published=False):
+    """Keep confirmed config outcomes and audit warnings across the rerun."""
+    notice = {"error": None, "result": None}
+    try:
+        notice["result"] = action()
+    except Exception as exc:
+        notice["result"] = getattr(exc, "mutation_result", None)
+        if isinstance(exc, AccessDenied):
+            notice["error"] = "Azure denied the configuration operation for this persona."
+        elif isinstance(exc, CredentialError):
+            notice["error"] = "The acting identity could not authenticate to App Configuration."
+        elif isinstance(exc, ValueError):
+            notice["error"] = str(exc)
+        else:
+            notice["error"] = "Configuration operation failed. Review the outcome below before retrying."
+    invalidate_configuration(published=published)
+    st.session_state["mutation_notice"] = notice
+    st.rerun()
+
+
+def render_mutation_notice():
+    notice = st.session_state.get("mutation_notice")
+    if not notice:
+        return
+    if notice["error"]:
+        st.error(notice["error"])
+    result = notice["result"]
+    if result:
+        if result.changed_keys:
+            st.success("Confirmed writes: " + ", ".join(result.changed_keys))
+        elif not notice["error"]:
+            st.info("No configuration values changed.")
+        st.caption(f"Operation {result.operation_id}; outcome: {result.outcome}")
+        if result.failed_key:
+            st.warning(
+                f"Stopped at {result.failed_key}. Prior writes were not rolled back. "
+                "An unknown outcome requires checking current state before retrying."
+            )
+        if result.not_attempted:
+            st.caption("Not attempted: " + ", ".join(result.not_attempted))
+        for warning in sorted(set(result.audit_warnings)):
+            st.warning(warning)
+
+
+def search_editor(scope, editable):
+    revision = hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()[:16]
+    values = render_search_form(
+        st, scope, editable=editable,
+        widget_key=f"{persona}:draft:{cfg.DRAFT_LABEL}:{revision}",
+    )
+    if values is not None:
+        finish_mutation(lambda: cfg.save_knowledge(values, persona=persona))
+
+
+def render_blob_history():
+    st.markdown(
+        "**Application-recorded change history.** Includes PoC saves, publishes and "
+        "permission-test outcomes; excludes direct Portal/CLI/seed changes. "
+        "Persona identifies an acting service credential, not an authenticated person."
+    )
+    st.caption(
+        "Best-effort history: storage failures do not block configuration writes. "
+        "No tamper-proof or completeness guarantee. Do not put secrets or patient data in configuration."
+    )
+    hours = st.number_input("History window (hours, UTC)", min_value=1, max_value=720, value=24)
+    if st.button("Refresh change history"):
+        end = dt.datetime.now(dt.timezone.utc)
+        st.session_state.pop("history_page", None)
+        try:
+            page = change_history.load_events(end - dt.timedelta(hours=hours), end)
+            st.session_state["history_page"] = (hours, end.isoformat(), page)
+        except (change_history.HistoryUnavailable, ValueError) as exc:
+            st.error(str(exc))
+    snapshot = st.session_state.get("history_page")
+    if not snapshot:
+        st.info("Select Refresh change history to load recorded events.")
+        return
+    loaded_hours, loaded_at, page = snapshot
+    if loaded_hours != hours:
+        st.info("Refresh to apply the changed time window.")
+        return
+    st.caption(f"Loaded at {loaded_at}; last {loaded_hours} hours. Audit-reader credential used.")
+    for warning in page.warnings:
+        st.warning(warning)
+    store = st.selectbox("History store", ["All", "draft", "production"])
+    actor = st.selectbox("History persona", ["All", *rbac.PERSONAS])
+    outcomes = sorted({event["outcome"] for event in page.events})
+    outcome = st.selectbox("History outcome", ["All", *outcomes])
+    visible = [event for event in page.events
+               if (store == "All" or event["store"] == store)
+               and (actor == "All" or event["actor_persona"] == actor)
+               and (outcome == "All" or event["outcome"] == outcome)]
+    if visible:
+        columns = ("timestamp", "actor_persona", "operation", "store", "label", "key",
+                   "old_value", "old_value_known", "new_value", "outcome",
+                   "error_category", "operation_id")
+        st.dataframe([{key: str(event.get(key, "")) for key in columns} for event in visible],
+                     use_container_width=True)
+        summaries = [event for event in visible if event["operation"] == "publish_summary"]
+        if summaries:
+            with st.expander("Publication details"):
+                st.json([{key: event.get(key) for key in
+                          ("operation_id", "outcome", "succeeded_keys", "failed_key", "not_attempted")}
+                         for event in summaries])
+    else:
+        st.info("No recorded events match this selection; this does not prove no changes occurred.")
+    suffix = "partial-selection" if page.truncated else "selection"
+    st.download_button("Download visible history as CSV", data=change_history.export_csv(visible),
+                       file_name=f"poc001-config-history-{suffix}.csv", mime="text/csv")
 
 
 def text_metrics(text: str) -> dict:
@@ -241,11 +362,7 @@ with st.sidebar:
     st.divider()
     st.header("Configuration control plane")
     if st.button("Refresh configuration from Azure", use_container_width=True):
-        cached_profile.clear()
-        cached_knowledge.clear()
-        st.session_state.pop("a2a_baseline_context_id", None)
-        st.session_state.pop("a2a_candidate_context_id", None)
-        st.session_state.pop("results", None)
+        invalidate_configuration(published=True)
         st.rerun()
     with st.expander("Endpoints"):
         st.table([{"setting": k, "value": v} for k, v in endpoints_summary().items()])
@@ -284,6 +401,8 @@ def show_denied(problem) -> None:
 
 
 st.title("Configurable agent responses without a code release")
+st.caption("Healthcare member-support demo. Use synthetic questions only; do not enter patient information.")
+render_mutation_notice()
 
 tab_experience, tab_knowledge, tab_governance, tab_audit = st.tabs(
     ["Experience comparison", "Knowledge scope", "Governance and RBAC", "Audit trail"]
@@ -307,7 +426,10 @@ with tab_experience:
         "here until a release approver publishes them."
     )
 
-    user_message = st.text_area("Customer message", value=DEFAULT_MESSAGE, height=90)
+    user_message = st.text_area("Member message", value=DEFAULT_MESSAGE, height=90)
+    use_grounding = st.checkbox("Use configured Search grounding", value=True)
+    st.caption("Grounding is used only when requested here AND enabled in the published profile. "
+               "Turning it off keeps the healthcare scenario, without reference-specific facts.")
 
     if st.button("Generate side-by-side comparison", type="primary"):
         try:
@@ -321,12 +443,14 @@ with tab_experience:
                     baseline = client.invoke(
                         user_message,
                         "baseline",
+                        grounded=use_grounding,
                         context_id=st.session_state.get("a2a_baseline_context_id"),
                     )
                     st.session_state["a2a_baseline_context_id"] = baseline["context_id"]
                     candidate = client.invoke(
                         user_message,
                         "candidate",
+                        grounded=use_grounding,
                         context_id=st.session_state.get("a2a_candidate_context_id"),
                     )
                     st.session_state["a2a_candidate_context_id"] = candidate["context_id"]
@@ -389,18 +513,19 @@ with tab_knowledge:
         "may draw on."
     )
     st.caption(
-        "Both columns use the same question, the same index, and the same prompt asset "
-        f"(`{GROUNDED_ASSET}`). The only difference is one configuration value."
+        "Both columns use the same healthcare question. Each uses its own configured "
+        "Search scope; disabled grounding makes no Search call. Change Search settings "
+        "under Governance and RBAC > Search configuration."
     )
 
     if not knowledge.configured():
         st.info(
-            "The knowledge layer is not provisioned. Run "
-            "`pwsh scripts/setup-knowledge.ps1 -ProductionStore <your-appcfg-name>`, "
-            "re-run `scripts/seed-config.ps1`, then restart the app."
+            "No Search endpoint is configured. Disabled scopes still work without Search; "
+            "enabled scopes will report that reference material is unavailable."
         )
-    else:
-        question = st.text_area("Customer question", value=DEFAULT_QUESTION, height=80)
+    # Keep the preview available even when Search is disabled/unconfigured.
+    with st.container():
+        question = st.text_area("Member question", value=DEFAULT_QUESTION, height=80)
 
         if st.button("Compare retrieval scopes", type="primary"):
             try:
@@ -434,6 +559,8 @@ with tab_knowledge:
                     }
             except (AccessDenied, CredentialError) as denied:
                 show_denied(denied)
+            except Exception:
+                st.error("The scope comparison failed. Check Search schema, filter and service access; no configuration was changed.")
 
         knowledge_results = st.session_state.get("knowledge_results")
         if knowledge_results:
@@ -449,12 +576,9 @@ with tab_knowledge:
                 )
                 st.divider()
                 st.markdown(
-                    "The proposed scope widens the filter to admit content marked "
-                    "`draft`. Nothing about the content, the index, or the code changed. "
-                    "This is the class of change the approval gate exists to catch, and "
-                    "it is why a knowledge change needs an evaluation set rather than a "
-                    "reading of the diff: a wider scope produces a fluent, confident, "
-                    "wrong answer."
+                    "Review the actual retrieval settings and sources above before publishing. "
+                    "A broader filter can admit unapproved material; the default healthcare "
+                    "draft admits approved content only."
                 )
             else:
                 render_grounded(
@@ -489,9 +613,11 @@ with tab_governance:
 
     if not cfg.draft_configured():
         st.info(
-            "The draft store is not provisioned yet. Run "
-            "`pwsh scripts/setup-governance.ps1 -ProductionStore <store-name>`."
+            "Configure the approved separate draft App Configuration endpoint to enable editing. "
+            "These read-only Search controls show defaults, not production values."
         )
+        st.subheader("Search configuration")
+        search_editor({}, editable=False)
     else:
         st.subheader("What this identity is actually allowed to do")
         st.caption(
@@ -517,6 +643,9 @@ with tab_governance:
                 }
                 for row in probe_state["results"]
             ])
+            for warning in sorted({warning for row in probe_state["results"]
+                                   for warning in row.get("audit_warnings", [])}):
+                st.warning(warning)
 
         st.divider()
         st.subheader("Edit the draft configuration")
@@ -524,13 +653,6 @@ with tab_governance:
             "Both the wording (`experience:*`) and the retrieval scope "
             "(`knowledge:*`) are governed by the same roles and the same gate."
         )
-
-        saved_key = st.session_state.pop("draft_saved", None)
-        if saved_key:
-            st.success(
-                f"Saved to the draft store: `{saved_key}`. This does not "
-                "change what customers receive until it is published below."
-            )
 
         try:
             draft_profile = cached_profile(cfg.DRAFT_LABEL, "draft", persona)
@@ -577,24 +699,21 @@ with tab_governance:
                 else:
                     st.info("The draft and production match. Nothing is waiting to be published.")
 
-            editable = (
-                [f"{cfg.EXPERIENCE_PREFIX}{k}" for k in cfg.EDITABLE_KEYS]
-                + [f"{cfg.KNOWLEDGE_PREFIX}{k}" for k in cfg.EDITABLE_KNOWLEDGE_KEYS]
-            )
+            st.subheader("Experience settings")
+            editable = [f"{cfg.EXPERIENCE_PREFIX}{k}" for k in cfg.EDITABLE_KEYS]
             edit_key = st.selectbox("Setting", options=editable)
             prefix, _, short_key = edit_key.partition(":")
             prefix = f"{prefix}:"
             new_value = st.text_input("New value", value=draft_all.get(edit_key, ""))
             if st.button("Save to draft"):
-                try:
-                    cfg.set_value(short_key, new_value, store="draft", persona=persona,
-                                  prefix=prefix)
-                    cached_profile.clear()
-                    cached_knowledge.clear()
-                    st.session_state["draft_saved"] = edit_key
-                    st.rerun()
-                except (AccessDenied, CredentialError) as denied:
-                    show_denied(denied)
+                finish_mutation(lambda: cfg.set_value(
+                    short_key, new_value, store="draft", persona=persona, prefix=prefix,
+                ))
+
+        st.subheader("Search configuration")
+        if draft_profile is None:
+            st.caption("Draft settings could not be read; defaults below are not stored values.")
+        search_editor(draft_scope, editable=draft_profile is not None)
 
         st.divider()
         st.subheader("Publish the draft to production")
@@ -604,33 +723,23 @@ with tab_governance:
             "holds Data Owner on production."
         )
         if st.button("Publish to production"):
-            try:
-                published = cfg.publish_draft(persona=persona)
-                cached_profile.clear()
-                cached_knowledge.clear()
-                st.success(
-                    f"Published {len(published)} settings to production: {', '.join(published)}. "
-                    "Regenerate on the Experience comparison tab to see the new wording."
-                )
-            except (AccessDenied, CredentialError) as denied:
-                show_denied(denied)
-            except RuntimeError as exc:
-                st.error(str(exc))
+            finish_mutation(lambda: cfg.publish_draft(persona=persona), published=True)
 
 
 with tab_audit:
-    st.markdown(
-        "Governance needs evidence as well as enforcement. App Configuration "
-        "resource logs record data-plane activity in Log Analytics. `AACAudit` "
-        "records writes with the caller identity, and `AACHttpRequest` records "
-        "reads and writes with a status code, which is where a denied attempt "
-        "appears. The Azure activity log covers control-plane operations only and "
-        "does not capture key-value changes."
-    )
-
-    if not audit.workspace_configured():
-        st.info("Run scripts/setup-governance.ps1 to create the Log Analytics workspace.")
+    try:
+        audit_backend = change_history.backend()
+    except ValueError as exc:
+        audit_backend = None
+        st.warning(str(exc))
+    if audit_backend == "blob":
+        render_blob_history()
+    elif audit_backend is None:
+        st.info("History is unavailable. Configuration actions still report their own outcome and history warnings.")
+    elif not audit.workspace_configured():
+        st.info("Log Analytics was explicitly selected but no workspace is configured. Select Blob history for this deployment.")
     else:
+        st.markdown("Legacy Log Analytics resource logs: AACAudit writes and AACHttpRequest denied attempts.")
         st.caption(
             "Queries use the dedicated audit identity and live/draft resource scope."
             if vm_mode() else "Queries run under your own sign-in, not the selected persona."

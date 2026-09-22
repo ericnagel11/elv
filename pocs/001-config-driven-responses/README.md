@@ -1,294 +1,418 @@
-# Config-Driven Responses PoC
+# Config-Driven Healthcare Responses PoC
 
-A minimal Azure proof of concept for the whitepaper user story:
+A trusted-presenter demonstration of configurable member-support wording,
+claims-and-appeals retrieval, draft approval and application change history.
+It maps to Scenario 1 in the
+[PoC Scenario Catalog](../../specs/001-poc-scenario-catalog/spec.md).
 
-> As an experience designer, I want tone, wording, verbosity, and response
-> structure to be configurable so that customer feedback can be incorporated
-> without software releases.
+Use the **same exact question in grounded and ungrounded modes**:
 
-It maps to Scenario 1 of the PoC Scenario Catalog, "Market-Specific Tone and
-Persona Optimization" (traces to AI-WP-001, AI-WP-002, AI-WP-005, AI-WP-007, and
-the CSAT-focused A/B testing customer note). See
-[../../specs/001-poc-scenario-catalog/spec.md](../../specs/001-poc-scenario-catalog/spec.md).
+> I received a denial notice for my health insurance claim. How can I appeal it?
 
-## What it demonstrates
+Baseline and candidate retain different tone, detail, reading level and structure;
+both are Contoso Health Plan administrative member support, not different
+industries. Use synthetic content only: no PHI, member IDs, claim numbers,
+diagnoses, tokens or secrets in messages, configuration or exported evidence.
 
-- The assistant's tone, verbosity, reading level, persona, and response
-  structure are changed through **configuration only**, with no code change and
-  no redeploy.
-- A **side-by-side** view compares a `baseline` (current) response with a
-  `candidate` (proposed) response for the same customer message.
-- Prompt wording lives in **versioned prompt assets**, so a template change can
-  be rolled back by pointing a profile at the previous version.
-- **Azure RBAC decides who may change it.** The app acts as one of four Microsoft
-  Entra identities across a draft and a production store, so an experience
-  designer can edit a proposal but only a release approver can publish it. Every
-  denial in the UI is a real Azure 403.
-- **What the assistant knows is configurable too.** Content lives in a governed
-  Blob container, an Azure AI Search indexer keeps the index current with no
-  application code, and the `knowledge:*` keys decide which of that content an
-  answer may draw on.
+**Implemented:** the Blob history contract is in
+[change_history.py](change_history.py), the six-key Search contract in
+[search_settings.py](search_settings.py), and the grounding gate in
+[experience_runtime.py](experience_runtime.py), integrated through
+[config.py](config.py) and [app.py](app.py). Deploy the complete matching change,
+dependencies and configuration before accepting the full workflow below. A
+legacy LA-only Audit tab or retail-prefilled question indicates an older
+deployment, **not** a reason to provision Log Analytics. Target Azure acceptance
+remains required; local mocked tests do not establish live Blob permissions.
 
-## The runtime boundary and its three internal layers
+## What changes without a code release
 
-The experience comparison now calls the response runtime through the open
-**Agent2Agent (A2A) 1.0** protocol. Streamlit is the A2A client. A separate
-runtime process publishes an Agent Card, accepts customer messages as A2A tasks,
-and returns responses as artifacts. App Configuration values, rendered prompts,
-Search filters, and Azure credentials remain private inside that remote agent.
+- `experience:*` configures persona, tone, verbosity, reading level, response
+  structure and the selected versioned prompt asset.
+- `knowledge:*` selects an existing index/alias, OData scope, result count,
+  query mode, citations and whether retrieval is enabled.
+- An experience designer edits the draft `candidate`; an approver publishes to
+  the production `candidate`. Both prefixes use the same App Configuration RBAC
+  boundary. Labels alone do not provide separate store-level authorization.
+- Configuration changes take effect in fresh runtime contexts after refresh.
+  **New application code, prompt bodies, dependencies and environment settings
+  still require deployment/restart.** Existing stored settings are not migrated
+  just by updating repository defaults or examples.
 
-| Layer | Technology | Role in the PoC |
-|---|---|---|
-| Interoperability boundary | **A2A 1.0** | Provides discovery, messages, contexts, tasks, and response artifacts without exposing agent internals. |
-| Control plane | **Azure App Configuration** | Holds the experience knobs per profile (`baseline`, `candidate`). Editing a value changes behavior at the next refresh; no redeploy. |
-| Templating | **Prompt Templates** | The `.prompty` bodies are Jinja2 templates whose variables (`tone`, `verbosity`, `reading_level`, `response_structure`, `persona`) are filled from configuration. |
-| Governance | **Prompt Assets** | Each `.prompty` file is a named, versioned asset (`response.v1`, `response.v2`). A profile selects which version to use, which gives rollback. |
+## Runtime and A2A contexts
 
-```mermaid
-flowchart LR
-    designer[Experience designer] -->|edit knobs / swap asset version| appcfg[Azure App Configuration]
-  message[Customer message] --> client[Streamlit A2A client]
-  client -->|A2A task per profile| agent[Configured response agent]
-  agent -->|read production profile| appcfg
-  agent -->|load versioned .prompty asset| assets[Prompt assets v1 / v2]
-  agent -->|render template, then call| aoai[Azure OpenAI]
-  aoai --> agent
-  agent -->|A2A response artifact| client
-  client -->|side-by-side + metrics| designer
-```
+Streamlit calls a separate response agent through **A2A 1.0**. The first task in
+an A2A `contextId` resolves and pins the production profile and knowledge scope.
+Later tasks in that context keep those values; external clients' existing
+contexts do not change when a draft is published. Start a new context to observe
+newly published configuration.
 
-The optional comparison extension accepts only `baseline` or `candidate`; a
-caller cannot supply tone, prompt assets, store names, labels, or knowledge
-filters. The first task in an A2A `contextId` resolves and pins configuration.
-Further tasks in that context remain coherent. **Refresh configuration from
-Azure** clears the client context IDs, so the next tasks create new contexts and
-observe newly published configuration.
+The comparison extension accepts `baseline`/`candidate` and grounding intent,
+not arbitrary prompt assets, stores, labels, filters or credentials. The runtime
+requires **both** a grounding request and published `knowledge:enabled=true`.
+A caller cannot override disabled server configuration. A disabled scope uses
+the experience prompt and makes **zero Search calls**, including direct
+`run_grounded()` previews. It can still call OpenAI; disabled retrieval does not
+mean offline generation. Missing references must not be reported as successful
+grounding.
 
-## Prerequisites
+Publishing (including partial failure) automatically clears the active UI A2A
+context IDs, cached profiles/scopes and displayed results. Regenerate to resolve
+production again. **Refresh configuration from Azure** does the same for external
+configuration changes; draft saves invalidate knowledge previews. Do not treat a pinned old conversation as a failed
+save, or promise that all remote contexts refresh automatically.
 
-### Red Hat VM / existing Azure services
+## Prerequisites: reuse approved services
 
-Use the shared [Red Hat hosting runbook](../../deployment/redhat/README.md).
-It runs both PoCs headlessly using private systemd services, separate Python
-environments and explicit managed identities. Run applications and tests on the
-VM only; use a workstation browser through the approved SSH tunnel.
+### Runtime boundaries
 
-**Do not use the provisioning/teardown steps below against existing shared Azure
-resources.** Those steps describe the original disposable development setup and
-can overwrite settings or delete services. VM deployment has separate resource
-readiness and identity gates; target VM verification is still pending.
+| Layer | Responsibility |
+| --- | --- |
+| Streamlit governance UI | Presents comparisons, edits draft configuration, publishes as the acting persona and displays history |
+| A2A response agent | Pins production configuration per conversation; keeps Search filters, prompt rendering and model calls behind the runtime boundary |
+| Azure App Configuration | Stores experience and knowledge settings; distinct live/draft stores enforce the change boundary |
+| Azure AI Search | Retrieves approved-scope reference excerpts; does not generate the answer |
+| Versioned Prompty assets / Azure OpenAI | Render healthcare instructions and generate replies with or without retrieved context |
+| Dedicated Blob history | Records app-observed setting changes after writes; separate from source documents and Search indexer storage |
 
-### Original disposable development environment
+### Required services and tools
 
-- Azure subscription where you can create an Azure OpenAI resource.
-- Azure CLI (`az`) and PowerShell (`pwsh` or Windows PowerShell).
-- Python 3.10 or later.
+- Approved Python 3.10+ environment with the matching
+  [requirements.txt](requirements.txt) dependencies, including the Blob SDK.
+- Distinct existing live/draft App Configuration stores, approved OpenAI endpoint
+  and deployment, and an existing Search index/alias compatible with this app.
+- Approved synthetic healthcare references and filterable healthcare/approval
+  metadata. Keep the customer's index selection and data unchanged by default.
+- For Blob history: the private dedicated container and separate identities
+  described below. **No Log Analytics workspace is required for PoC001 Blob mode.**
+- The host's approved routing, DNS, certificate/proxy policy and identity grants.
+  Successful access to one Azure service proves nothing about another.
 
-## Setup
+**Do not run legacy provisioning or teardown against customer/shared services.**
+[scripts/setup.ps1](scripts/setup.ps1),
+[scripts/setup-governance.ps1](scripts/setup-governance.ps1),
+[scripts/setup-knowledge.ps1](scripts/setup-knowledge.ps1) and
+[scripts/teardown.ps1](scripts/teardown.ps1) are disposable-environment
+provisioners/destructors, not reuse-only helpers. In particular, the legacy
+governance script provisions Log Analytics and identities; it is not needed for
+the Blob history path. The knowledge provisioner can create/modify services,
+permissions, blobs and Search definitions even when names are supplied.
+No resource, index, role, diagnostics, retention or public-access change happens
+automatically through the application or these environment examples.
 
-From this folder:
+### Hosting and identity modes
+
+For Linux systemd deployment, use the
+[Red Hat runbook](../../deployment/redhat/README.md) and
+[deployment environment example](../../deployment/redhat/poc001.env.example).
+[../../deployment/redhat/run.py](../../deployment/redhat/run.py) explicitly rejects
+Windows; it is not a Windows service launcher.
+
+`ELV_HOSTING_MODE=azure-vm` uses explicit VM-attached managed identities and ignores
+dotenv and local persona-secret files. Supply process/service environment values
+for both the UI and agent. Normal persona and dedicated audit-reader UUIDs must
+remain complete, nonzero and distinct; the extra history writer is checked lazily
+inside the best-effort history boundary. The VM and all presenters are one trust
+boundary, not per-person or per-process identity isolation.
+
+Development mode loads the project-local dotenv without overriding existing
+process values. Copy [.env.example](.env.example) to the local dotenv only for
+this mode and fill in approved existing metadata; never copy credentials from
+another host. `DefaultAzureCredential` uses the approved developer authentication
+workflow when persona credentials are absent. Blob writer and reader also use
+the developer credential in this mode: merely filling the VM UUID fields does
+not demonstrate separate identity permissions. The legacy persona-secret
+shortcut is not production authentication.
+
+### Run on Windows (development)
+
+In two PowerShell terminals opened in this PoC folder, use an **already prepared,
+approved** environment and authentication workflow. Do not bypass signing policy
+or run setup scripts to resolve customer resource gaps. Start the runtime in the
+first terminal and the UI in the second:
 
 ```powershell
-# 1. Provision resource group, App Configuration, and Azure OpenAI; write .env.
-pwsh scripts/setup.ps1
+# Terminal 1
+.\.venv\Scripts\python.exe a2a_server.py
 
-# 2. Add the governance layer: draft store, Log Analytics, four service
-#    principals with different roles. Requires Entra rights to create app
-#    registrations (for example the Application Developer role).
-pwsh scripts/setup-governance.ps1 -ProductionStore <printed-appconfig-name>
-
-# 3. Seed both stores (names are printed by the scripts above).
-pwsh scripts/seed-config.ps1 -AppConfigName <production-store> -DraftAppConfigName <draft-store>
-
-# 4. Optional: add the knowledge layer (storage account, Azure AI Search,
-#    index, alias, and indexer), then re-run step 3 to seed the knowledge keys.
-pwsh scripts/setup-knowledge.ps1 -ProductionStore <production-store>
+# Terminal 2
+.\.venv\Scripts\python.exe -m streamlit run app.py --server.address=127.0.0.1 --server.port=8501
 ```
 
-`setup.ps1` assigns two Entra ID roles to you: **App Configuration Data Owner**
-and **Cognitive Services OpenAI User**. Role assignments can take up to 15
-minutes to propagate.
+Open `http://127.0.0.1:8501`. The local agent defaults to
+`http://127.0.0.1:9999` and publishes `/.well-known/agent-card.json`.
+These trusted local demo listeners are not authenticated public endpoints.
+Do not expose them by opening firewall/NSG rules; production requires an approved
+HTTPS/authentication design. Restart **both** processes after environment or
+dependency changes. On an approved Windows Azure VM, use the approved process
+environment with `azure-vm` credentials instead of developer dotenv/sign-in;
+the Linux launcher/systemd package still does not apply.
 
-Steps 2 and 4 are optional. Without step 2 the app still runs, but every action
-uses your own sign-in and the governance tab is disabled. Without step 4 the
-Knowledge tab explains how to provision it and does nothing else.
+## Default Blob application history
 
-`setup-knowledge.ps1` defaults to the **Free** search tier, which costs nothing
-but does not support managed identity or semantic ranking. Pass
-`-SearchSku Basic` for a keyless indexer connection and semantic ranking. A
-subscription may hold only one Free search service.
+| Setting | PoC001 deployment value |
+|---|---|
+| `ELV_AUDIT_BACKEND` | `blob` (also the default when unset) |
+| `ELV_AUDIT_BLOB_ACCOUNT_URL` | `https://tenxengbenefitaistandard.blob.core.windows.net` |
+| `ELV_AUDIT_BLOB_CONTAINER` | `poc001-config-history` |
+| `ELV_AUDIT_BLOB_WRITER_CLIENT_ID` | Separate approved VM-attached UAMI **client UUID**, distinct from every persona and the audit reader |
+| `ELV_MI_AUDIT_CLIENT_ID` | Reused dedicated audit reader **client UUID** |
 
-## Run
+The owner must precreate/reuse this **dedicated private container** and approve
+the network path. Grant the writer **Storage Blob Data Contributor** and the
+reader **Storage Blob Data Reader**, each at **only this container**, not account,
+subscription or root scope. Do not grant runtime/designer/viewer personas history
+write rights. A prefix is not an RBAC boundary. The application never creates
+or overwrites the container or changes cloud permissions. It uses the standard
+HTTPS Blob hostname with no embedded credentials, SAS, query or container path.
+See [storage guidance](../../deployment/storage/README.md#poc001-application-change-history).
+
+### What the history means
+
+- **Application-only before/after history** for the allowlisted experience and
+  knowledge settings, with key, label, store, UTC time, old/new values and etags
+  when known, outcome and an operation ID for grouped saves/publications.
+  Unknown prior values are distinct from known absent or empty values.
+- Persona and configured client UUID identify the acting service credential,
+  **not an authenticated human**. App-observed failures and permission probes
+  are not a feed of every Azure denial. Same-value permission probes are not
+  business changes; ordinary unchanged saves should not appear as new changes.
+- **No coverage of direct Portal/CLI edits, seed/provisioning scripts or other
+  external writers; no historical backfill.** History is not a reconstruction
+  of all App Configuration activity.
+- No questions, retrieved documents, generated prompts, credential tokens or
+  arbitrary exception bodies in the history payload. Configuration values are
+  recorded: operators must not enter PHI, secrets or personal data in those keys.
+  This is not an automatic sensitive-data detector.
+
+Recording is **best effort**: a missing/invalid account, container or writer UUID,
+storage denial or timeout yields a visible warning while an otherwise permitted
+App Configuration operation proceeds. A failed configuration write remains a
+failure. History failure must not cause the app to retry the configuration write
+or block generation. Normal persona validation, Azure authorization and conflict
+validation are not bypassed. Read outages must say **unavailable**, not "no
+events"; an empty selection is not evidence that no changes ever happened.
+
+Each event attempts a unique JSON block blob with `overwrite=False`, not a shared
+CSV append. This is **not immutable, tamper-proof or WORM storage**: Contributor
+can overwrite/delete, and a crash between configuration write and history upload
+can leave a gap. There is no cross-store/Blob transaction, automatic rollback,
+local outbox or fallback to Log Analytics. Retention/lifecycle remains the
+resource owner's policy, never an application change.
+
+### Review and CSV acceptance
+
+In **Audit trail**, select the history window (initially 24 hours), select
+**Refresh change history**, apply store/persona/outcome filters, and use
+**Download visible history as CSV**.
+The helper accepts an interval of at most 30 days and returns at most 500 events,
+newest first among scanned rows. Listing/download/byte/time budgets and malformed
+files can make the selection partial: heed the warning; it need not contain the
+newest events from the entire requested interval.
+
+CSV is generated from exactly the selected visible rows, not a new cloud query.
+It has stable columns, quoting for commas/newlines and spreadsheet-formula
+neutralization. Protect downloads as configuration evidence; CSV is not a backup
+or completeness guarantee. Verify this UI integration after deploying the
+matching application changes; do not infer it from a successful Blob list probe.
+
+### Optional legacy Log Analytics
+
+Only `ELV_AUDIT_BACKEND=loganalytics` opts PoC001 into the legacy resource-log path.
+It requires an existing workspace customer UUID in
+`AZURE_LOG_ANALYTICS_WORKSPACE_ID` and approved `AACAudit`/`AACHttpRequest`
+diagnostics/ingestion. VM mode additionally requires distinct live/draft ARM IDs
+in `AZURE_APPCONFIG_RESOURCE_ID` and `AZURE_APPCONFIG_DRAFT_RESOURCE_ID`, with
+resource-context query rights for the dedicated audit reader. Do not add broad
+workspace access to suppress a denial. Non-VM legacy queries use the developer
+credential and configured workspace.
+
+The Linux launcher validates workspace UUID and audit ARM IDs **only** for this
+explicit PoC001 mode or for PoC002. Blob URL/container/writer settings are not a
+startup gate. PoC002 remains legacy LA-required **regardless** of
+`ELV_AUDIT_BACKEND`; this feature does not change its identities or application.
+Legacy resource logs are not the same before/after/CSV application-history feed.
+
+## Seed and migrate existing configuration
+
+[scripts/seed-config.ps1](scripts/seed-config.ps1) targets **existing** stores
+using an existing CLI sign-in (`-AuthMode login` by default). It does not sign in,
+provision, import/export a backup, change indexes/permissions or delete keys.
+It checks native CLI failures and hides values/CLI error bodies in its output.
+Its scope and behavior are:
+
+| Option | Actual behavior |
+|---|---|
+| Default | **Add missing keys only**; preserve all existing values, including retail/custom personas and filters. Production gets `baseline` and `candidate`; an optional distinct draft store gets only `candidate`. |
+| `-WhatIf` | Resolve the scoped plan with Azure reads and inspect CLI help when writes would be planned, but perform no writes. It is not an offline preview; values are hidden. |
+| `-OverwriteExisting` | Explicitly allow selected existing seed values to be replaced. Review a matching `-WhatIf` first and take any required protected backup separately; there is no automatic backup or unconditional confirmation prompt. Use `-Confirm` when per-operation confirmation is wanted. |
+| `-Keys` | Exact fully-qualified names from the twelve known `experience:*`/`knowledge:*` seed keys, not wildcard patterns. Omission selects all seed keys not otherwise skipped. |
+| `-Labels` | `baseline` and/or `candidate`; defaults to both. `candidate` affects production **and** the supplied draft store, not draft only. |
+| `-KnowledgeIndex` | Value for missing `knowledge:index` (default `kb-current`). Existing index selection is preserved even with overwrite unless this parameter is **explicitly supplied** and the key is selected. Index-name validation is lexical, not proof of existence/schema/access. |
+| `-SkipKnowledge` | Omit every knowledge key, even one selected by `-Keys`. It does not disable existing retrieval or delete settings. |
+
+Newly seeded profiles use healthcare member-support personas and the same
+approved-only filter in **both** production and draft:
+`industry eq 'healthcare' and status eq 'approved'`.
+Seeds enable knowledge (`true`); missing runtime configuration safely defaults
+to disabled (`false`). Seeding missing keys does **not** migrate existing retail
+values. Review the actual values securely before opting into a scoped overwrite.
+
+Preview only, from this folder with approved store names substituted:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-az login          # DefaultAzureCredential uses this sign-in; no keys are used
+# Add-missing plan; preserves existing values.
+& .\scripts\seed-config.ps1 -AppConfigName '<live-store>' -DraftAppConfigName '<draft-store>' -WhatIf
 
-# Terminal 1: A2A response runtime
-python a2a_server.py
-
-# Terminal 2: Streamlit A2A client and governance UI
-streamlit run app.py
+# Review only the proposed healthcare persona/filter migration for candidate.
+# This selects candidate in BOTH supplied stores.
+& .\scripts\seed-config.ps1 -AppConfigName '<live-store>' -DraftAppConfigName '<draft-store>' -Keys experience:persona,knowledge:filter -Labels candidate -OverwriteExisting -WhatIf
 ```
 
-The A2A server listens on `http://127.0.0.1:9999` by default and publishes its
-Agent Card at `/.well-known/agent-card.json`. Set `A2A_AGENT_URL` to use another
-endpoint. The local PoC endpoint is unauthenticated and bound to loopback;
-production must put it behind HTTPS and Entra OAuth/OIDC authorization.
+Applying without `-WhatIf` makes real writes and requires separate owner approval.
+The script plans first, rejects selected locked overwrites, then rechecks each
+key's presence/ETag/lock before writing. If installed CLI help exposes both
+`--if-match` and `--if-none-match`, it uses conditional writes. Otherwise it warns
+that the recheck is **not atomic**: pause concurrent writers; a race remains
+between read and write, including CLI retries. Writes stop on the first failure;
+earlier successful keys remain and are not rolled back. Seed activity is outside
+application-recorded history. Do not bulk reseed or replace a customer-selected
+index merely to match repository defaults.
 
-## Try the demo
+## Healthcare Search controls
 
-1. Enter a customer message and select **Generate side-by-side comparison**. The
-   baseline and candidate responses render together with simple metrics (word
-   count, reading ease, grade level, latency, tokens).
-2. Change the experience with no code release, for example make the candidate
-   more detailed:
+The dedicated Search editor is under **Governance and RBAC > Search configuration**, separate
+from experience wording. The six existing keys and their contract are:
 
-   ```powershell
-   az appconfig kv set --name <appconfig-name> --key experience:verbosity `
-     --value "detailed, with a short example" --label candidate --auth-mode login --yes
-   ```
-
-3. Select **Refresh configuration from Azure** in the sidebar, then regenerate.
-  This starts fresh A2A contexts, whose first tasks resolve the new production
-  configuration. The app and agent were never rebuilt or redeployed.
-4. Roll back a template change by pointing the candidate at the previous asset:
-
-   ```powershell
-   az appconfig kv set --name <appconfig-name> --key experience:prompt_asset `
-     --value "response:v1" --label candidate --auth-mode login --yes
-   ```
-
-5. Use the preference buttons to record which variant is better. Choices append
-   to `feedback.csv` as simple A/B evidence.
-
-## Security notes
-
-- VM mode uses explicit managed identities, does not load dotenv/persona-secret
-  files and restricts audit requests to configured live/draft resource contexts.
-  The VM and all presenters are one trusted demo boundary; the persona selector
-  is not user authentication. See the [hosting security boundary](../../deployment/redhat/README.md#boundaries-read-before-installing).
-- Legacy development authentication uses Entra ID through `DefaultAzureCredential`. No connection
-  strings or API keys are stored in code or in `.env` (endpoints only).
-- Access is least-privilege via RBAC (App Configuration and Azure OpenAI data
-  roles scoped to the two resources).
-- The governance demo writes service principal client secrets to
-  `roles.local.json` in the original non-VM mode, which is gitignored. This is a proof-of-concept shortcut so
-  one process can act as four identities. Production would use managed identity
-  or sign the user in. `scripts/teardown.ps1` deletes those identities.
-- Use synthetic messages only. Do not paste real customer or personal data.
-
-## Cost and teardown
-
-- App Configuration uses the Free tier. Azure OpenAI is billed per token; this
-  PoC sends small prompts, so demonstration cost is minimal. The governance layer
-  adds a second store (Developer tier has a small daily charge, because the Free
-  tier permits only one store per subscription per region) and a Log Analytics
-  workspace billed per GB ingested. The knowledge layer adds a storage account
-  (a few documents, so effectively free) and a search service, which is free on
-  the default Free tier. Confirm current pricing for your region and agreement.
-- Remove everything when finished. Deleting the resource group is not enough on
-  its own, because the four app registrations live in Microsoft Entra ID:
-
-  ```powershell
-  pwsh scripts/teardown.ps1
-  ```
-
-## Not included (production evolution)
-
-This is a lightweight spike. Natural next steps toward the reference
-architecture standard:
-
-- **True audience A/B** using App Configuration variant feature flags plus
-  Application Insights feature-flag telemetry, instead of a manual side-by-side.
-- API Management in front of the model, Azure AI Content Safety, and end-to-end
-  OpenTelemetry tracing.
-- Deploy the app to Azure Container Apps or App Service with a managed identity,
-  plus CI/CD and an evaluation harness.
-- A governed approval and promotion workflow: RBAC blocks the unauthorised
-  change, but it does not route a request for review. Pair it with App
-  Configuration change events and Logic Apps.
-- Privileged Identity Management for time-bound approver access, and a custom
-  role if update must be separated from delete.
-
-## Governance demo: what to try
-
-Select an identity in the sidebar under **Acting as**, then use the
-**Governance and RBAC** tab.
-
-| Acting as | Edit the draft | Publish to production |
+| Key | Control / values | Missing-setting default |
 |---|---|---|
-| Viewer / Auditor | denied (403) | denied (403) |
-| Experience designer | succeeds | denied (403) |
-| Release approver | succeeds | succeeds |
-| Application runtime | denied, and it cannot even read the draft | denied (403) |
+| `knowledge:enabled` | Toggle; persisted `true`/`false` | `false` (seed uses `true`) |
+| `knowledge:index` | Existing approved index/alias text; lexical validation only | `kb-current` |
+| `knowledge:filter` | OData text; preserve expression apart from outer whitespace | `industry eq 'healthcare' and status eq 'approved'` |
+| `knowledge:top_k` | Integer **1..20** | `3` |
+| `knowledge:query_mode` | `simple` or `semantic` | `simple` |
+| `knowledge:citation_style` | `inline`, `footnote` or `none` | `inline` |
 
-Select **Run permission check** to have the app attempt all four operations and
-report what Azure actually allowed. Write checks rewrite an existing value
-unchanged, so they prove permission without altering configuration.
+An **explicit blank filter means no filter**, not the approved-only default;
+review/acknowledge the wider scope before saving. Absent/None values use defaults.
+Local validation is not a full OData parser and cannot prove schema compatibility,
+authorization or source approval. Never silently rewrite invalid existing enum
+or numeric settings simply by opening the editor. Deployment acceptance should
+verify all six controls, stored-versus-fallback visibility, validation before
+writes and read-only/default visibility when draft access is unavailable.
 
-## Knowledge demo: what to try
+[knowledge.py](knowledge.py) selects `title`, `content`, `url`, `industry`,
+`audience`, `status` and `effective_date`; the target must expose these fields
+and support the filter's fields. Semantic mode requires an appropriate tier and
+the existing `kb-semantic` configuration; reported keyword fallback is not proof
+of semantic operation. No vector/embedding query is sent by this code. A `top=0`
+connectivity probe or an index name containing "vector" does not prove this
+schema contract. Do not rebuild customer indexes or upload samples automatically.
 
-On the **Knowledge scope** tab, select **Compare retrieval scopes**. Both columns
-ask the same question against the same index with the same prompt asset
-(`response:v3`). The only difference is one configuration value:
+## Try the healthcare demo
 
-| Scope | `knowledge:filter` | Result |
+After the deployment gates pass:
+
+1. Use the exact question above in **Experience comparison**. With **Use
+   configured Search grounding** selected, both variants request grounding but
+   still honor their published enabled flags. Turn it off to compare ungrounded
+   healthcare responses, not a retail scenario.
+2. As **Experience designer**, edit a candidate draft setting, for example
+   `experience:verbosity` or `knowledge:top_k` within 1..20. Inspect the diff;
+   this does not change production yet. Keep the approved-healthcare filter.
+3. As **Release approver**, publish and review the actual completed/failed keys
+   and history warnings. Publication is not an atomic transaction or automatic
+   rollback. Refresh configuration and regenerate in new A2A contexts.
+4. On **Knowledge scope**, compare live and draft using the same question.
+   Both default to approved healthcare content. Compare the actual settings and
+   observed sources: more than the filter can differ, and matching scopes may
+   retrieve the same documents. There is **no seeded draft healthcare document**
+   to promise or fabricate. Do not broaden scope just to force a different answer.
+5. Set the draft `knowledge:enabled=false` for an approved preview. Confirm a
+   disabled note, no retrieved sources and no Search call. After approved
+   publication and refresh, production should honor the same gate.
+6. Review app-recorded before/after changes and grouped publication outcomes in
+   **Audit trail**, then export the visible selection as CSV. Feedback preferences
+   are separate local A/B evidence, not the configuration history.
+
+Ungrounded assets [prompts/response.v1.prompty](prompts/response.v1.prompty) and
+[prompts/response.v2.prompty](prompts/response.v2.prompty) give general process
+guidance and direct the member to their denial notice/member services; they must
+not invent deadlines, eligibility, coverage decisions or appeal outcomes. The
+grounded [prompts/response.v3.prompty](prompts/response.v3.prompty) uses only
+retrieved references, with the selected citations, and acknowledges missing
+answers. All modes prohibit clinical advice and requests for PHI. Repository
+healthcare documents are synthetic references, not real coverage/medical advice;
+prompt sample metadata is not automatically applied as runtime configuration.
+
+### RBAC and permission checks
+
+Select **Acting as** and use **Governance and RBAC**:
+
+| Acting as | Edit draft | Publish to production |
 |---|---|---|
-| Live (production) | `industry eq 'retail' and status eq 'approved'` | Answers from the approved 2026 returns policy: 30 days, 6.99 fee |
-| Proposed (draft) | `industry eq 'retail' and (status eq 'approved' or status eq 'draft')` | Also admits the unapproved 2027 revision: 45 days, no fee |
+| Viewer / Auditor | Azure denial | Azure denial |
+| Experience designer | Allowed | Azure denial |
+| Release approver | Allowed | Allowed |
+| Application runtime | Denied; cannot read draft | Denied |
 
-Both filters pin the industry, so the status clause is the only thing that
-differs and any change in the answer is attributable to approval status. The
-corpus spans four industries, and keyword ranking over so few documents
-otherwise puts the onboarding module above the returns policy for a returns
-question.
+These outcomes require actual approved Azure assignments, not UI-side role
+simulation. Authentication failure is distinct from Azure 403. **Run permission
+check** performs real calls; its write probes rewrite an existing value unchanged
+and must be labeled `permission_probe`, not ordinary business edits. Use only
+approved demo stores. The selected persona is not end-user authentication; the
+dedicated history reader is independent of the currently selected persona.
 
-The governance signal lives in the blob metadata, not in the document text. The
-2027 revision reads like a finished policy on purpose: a document that announces
-its own draft status in its prose gets treated as an instruction and the model
-refuses, which hides the failure this comparison exists to show.
+## Acceptance evidence and limits
 
-The proposed scope produces a fluent, confident, wrong answer. That is the point:
-a wording change is obvious in a side-by-side, whereas a scope change is not, so
-a knowledge change needs an evaluation set rather than a reading of the diff.
+### Offline checks
 
-Other things worth trying:
+From the PoC folder in a prepared Python environment:
 
-- Edit `knowledge:filter` on the **Governance and RBAC** tab as the experience
-  designer, then try to publish it. The same roles govern retrieval scope and
-  wording, because both are configuration in the same store.
-- Set `knowledge:filter` to `industry eq 'healthcare'` and ask a returns
-  question. The assistant declines rather than inventing an answer, because the
-  grounding rules in `response.v3.prompty` say so.
-- Change `knowledge:top_k` or `knowledge:citation_style` and regenerate.
-- Edit `knowledge/contoso-returns-policy.md`, re-run
-  `scripts/setup-knowledge.ps1`, and watch the answer change with no code
-  release. Flipping a document's `status` in `knowledge/manifest.json` from
-  `draft` to `approved` publishes it.
+```powershell
+python -m unittest discover -s tests -v
+& .\scripts\tests\test-seed-config.ps1
+```
 
-### The one setting that must be right on day one
+The suites include real Streamlit AppTest interactions, SDK models with mocked
+transports, configuration conflict/partial-publish cases, audit outages, CSV
+escaping and healthcare prompt rendering. They do not authenticate to Azure or
+call the model. The seed suite uses a local function-mocked CLI; it does not
+establish native Azure CLI quoting or live service behavior. Do not run
+[_diag.py](_diag.py) as an offline test: it performs live Search/model requests.
 
-Azure AI Search detects changes automatically but **does not detect deletions**.
-`setup-knowledge.ps1` therefore configures a soft-delete policy on the
-`IsDeleted` blob metadata flag before the first indexer run. The policy is not
-retroactive: documents deleted before it existed stay in the index permanently,
-and the only remedy is to build a new index.
+Local verification on 2026-09-21 used Python 3.12 on Windows: 140 PoC tests,
+22 deployment/hosting tests and the PowerShell seed suite passed. This does not
+establish Python 3.14 compatibility or actual customer-VM acceptance.
 
-## Screenshots to capture for the paper
+### Customer-VM acceptance
 
-1. Sidebar **Acting as** showing a persona and the roles it holds.
-2. **Run permission check** for the experience designer (three allow, one deny).
-3. **Run permission check** for the application runtime (one allow, three deny).
-4. Designer editing `tone` in the draft store and the success confirmation.
-5. Viewer attempting the same edit, showing the red Azure 403 banner.
-6. Designer selecting **Publish to production** and being denied.
-7. Approver selecting **Publish to production** and succeeding.
-8. Azure portal **Access control (IAM)** role assignments on each store.
-9. Audit tab: **Who changed what** results showing `CallerIdentity`.
-10. Audit tab: **Denied attempts (403)** results.
-11. Knowledge tab: the two retrieval scopes side by side, with the unapproved
-    document warning visible on the proposed side.
-12. Knowledge tab: **Sources retrieved** expander showing the `status` column.
+Capture the exact healthcare question in both modes, six Search settings with
+draft/live differences, enabled/disabled retrieval evidence, new context behavior,
+real RBAC results and before/after history with filtered CSV. Test missing/denied
+history using mocks first; never revoke shared customer permissions to force a
+failure. Confirm reader can read but not upload at the dedicated container.
+
+Offline tests and editor diagnostics are not Azure/network acceptance. The
+[deployment tests](../../deployment/redhat/tests/test_deployment.py) cover
+backend-aware startup without cloud calls; they do not execute application
+history/CSV or certify UI integration. Validate the matching application tests
+and owner-approved end-to-end workflow separately.
+
+This PoC provides no immutable compliance audit, human identity verification,
+historical backfill, automatic rollback/delete workflow or external-edit polling.
+Resource owners manage retention, costs, permissions and cleanup. Do not run
+teardown or delete shared resources when the demonstration ends.
+
+### Cost and production boundaries
+
+OpenAI calls incur token charges. Search/App Configuration retain their existing
+tier/capacity charges; Blob history adds small per-event writes, storage and
+bounded read/download transactions. Listing a long history window costs more
+than a short one. This change adds no Log Analytics workspace or always-running
+audit worker. Retention, soft delete or immutability policies require separate
+owner review; the app never installs or changes them.
+
+For production, add authenticated user attribution, a durable transactional
+change/outbox design, appropriate record retention and immutable storage if
+required, and independent operational monitoring. The presenter-only identity
+selector and warning-only audit failures are explicit PoC limitations.

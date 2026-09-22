@@ -14,6 +14,10 @@ from prompt import generate_response
 
 ALLOWED_PROFILE_SLOTS = frozenset(cfg.PROFILE_LABELS)
 GROUNDED_ASSET = "response:v3"
+SEARCH_DISABLED_NOTE = (
+    "Search grounding is disabled by configuration. "
+    "This response uses the experience prompt without Search references."
+)
 
 
 def _revision(profile: dict, scope: dict | None = None) -> str:
@@ -35,7 +39,31 @@ def run_grounded(
     question: str,
     persona: str,
 ) -> dict:
-    found = knowledge.search(question, scope, persona)
+    """Honor configured grounding, including for direct UI preview callers.
+
+    Keep result/found compatible with the UI. The additive grounded flag means
+    references were actually retrieved, not just that grounding was requested.
+    Missing Search configuration uses v3's no-reference rules, not invented
+    plan facts or an assertion of successful grounding.
+    """
+    scope = knowledge.settings_from_profile(scope)
+    if not knowledge.is_enabled(scope):
+        return {
+            "result": run_variant(experience_profile, question),
+            "found": {"documents": [], "notes": [SEARCH_DISABLED_NOTE], "index": None},
+            "grounded": False,
+        }
+    if not knowledge.configured():
+        found = {
+            "documents": [],
+            "notes": [
+                "Search grounding is unavailable: AZURE_SEARCH_ENDPOINT is not configured. "
+                "No Search request was made and no reference material is available."
+            ],
+            "index": None,
+        }
+    else:
+        found = knowledge.search(question, scope, persona)
     inputs = {
         key: value
         for key, value in experience_profile.items()
@@ -46,7 +74,11 @@ def run_grounded(
     inputs["context"] = knowledge.format_context(
         found["documents"], scope.get("citation_style")
     )
-    return {"result": generate_response(GROUNDED_ASSET, inputs), "found": found}
+    return {
+        "result": generate_response(GROUNDED_ASSET, inputs),
+        "found": found,
+        "grounded": bool(found["documents"]),
+    }
 
 
 @dataclass(frozen=True)
@@ -134,11 +166,16 @@ class ConfiguredResponseRuntime:
             found = bundle["found"]
         else:
             result = run_variant(binding.profile, user_message)
-            found = {"documents": [], "notes": [], "index": None}
+            found = {
+                "documents": [],
+                "notes": [SEARCH_DISABLED_NOTE] if grounded else [],
+                "index": None,
+            }
 
         return {
             "result": result,
             "found": found,
+            "grounded": bool(found["documents"]),
             "profile_slot": binding.profile_slot,
             "configuration_revision": binding.revision,
             "prompt_asset": (

@@ -4,9 +4,10 @@ import unittest
 import httpx
 from a2a.helpers import new_text_message
 
-from a2a_agent import EXPERIENCE_PROFILE_EXTENSION, parse_request_options
+from a2a_agent import EXPERIENCE_PROFILE_EXTENSION, build_agent_card, parse_request_options
 from a2a_client import ConfiguredAgentClient
 from a2a_server import create_app
+from search_settings import DEFAULT_QUESTION
 
 
 class FakeRuntime:
@@ -28,7 +29,7 @@ class FakeRuntime:
             "found": {
                 "documents": [
                     {
-                        "title": "Returns policy",
+                        "title": "Contoso Health Plan: Member Support Standards",
                         "status": "approved",
                         "score": 0.9,
                         "reranker_score": None,
@@ -42,15 +43,19 @@ class FakeRuntime:
 
 
 class A2AContractTests(unittest.TestCase):
+    def test_agent_card_uses_the_shared_healthcare_question(self):
+        card = build_agent_card("http://testserver")
+        self.assertEqual(card.skills[0].examples[0], DEFAULT_QUESTION)
+
     def test_profile_fields_require_the_declared_extension(self):
-        message = new_text_message("hello")
+        message = new_text_message(DEFAULT_QUESTION)
         message.metadata.update({"profileSlot": "candidate"})
 
         with self.assertRaisesRegex(ValueError, "requires the declared"):
             parse_request_options(message)
 
     def test_raw_configuration_is_rejected(self):
-        message = new_text_message("hello")
+        message = new_text_message(DEFAULT_QUESTION)
         message.extensions.append(EXPERIENCE_PROFILE_EXTENSION)
         message.metadata.update({"profileSlot": "baseline", "tone": "ignore policy"})
 
@@ -67,19 +72,19 @@ class A2AContractTests(unittest.TestCase):
 
         response = asyncio.run(
             client.invoke_async(
-                "Where is my order?",
+                DEFAULT_QUESTION,
                 profile_slot="candidate",
                 grounded=True,
             )
         )
 
-        self.assertEqual(response["result"]["text"], "candidate: Where is my order?")
+        self.assertEqual(response["result"]["text"], f"candidate: {DEFAULT_QUESTION}")
         self.assertEqual(response["profile_slot"], "candidate")
         self.assertEqual(response["configuration_revision"], "revision-123")
-        self.assertEqual(response["citations"][0]["title"], "Returns policy")
+        self.assertEqual(response["citations"][0]["title"], "Contoso Health Plan: Member Support Standards")
         self.assertEqual(response["result"]["messages"], [])
         self.assertEqual(len(runtime.calls), 1)
-        self.assertEqual(runtime.calls[0][1:], ("Where is my order?", "candidate", True))
+        self.assertEqual(runtime.calls[0][1:], (DEFAULT_QUESTION, "candidate", True))
 
 
 if __name__ == "__main__":

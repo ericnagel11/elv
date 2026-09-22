@@ -6,15 +6,75 @@ and OpenAI probes. The customer ran this probe: MI login succeeded, then the
 listing returned HTTP 403 with `AuthorizationPermissionMismatch`, CLI exit 1
 and CLI version `2.90.0`. Prioritize effective data permissions, scope, conditions
 and propagation for that identity; no missing role has yet been confirmed.
-Successful listing and Private Link routing remain unverified. Search remains
-paused and Log Analytics is deferred because the customer reports no workspace.
+Successful listing and Private Link routing remain unverified. That investigation
+paused Search and deferred Log Analytics because the customer reported no workspace.
+PoC001's new default Blob application-history path does not require one; PoC002's
+legacy Log Analytics requirement is unchanged.
 
 **Replacement target (2026-09-15):** The customer has since selected account
 `tenxengbenefitaistandard` and reports the VM identity has access there. The
-replacement container name and a successful probe result have not been supplied.
+replacement knowledge-container name and a successful probe result have not been supplied.
 Do not continue role changes on the original account based on the historical
 denial above. Reader versus Contributor depends on whether the identity will
 only validate/read data or also upload onboarding content, as explained below.
+
+## PoC001 application change history
+
+This is **separate from knowledge onboarding and Search indexing**. Use the
+existing account endpoint `https://tenxengbenefitaistandard.blob.core.windows.net`
+and a dedicated **private, owner-precreated** container, `poc001-config-history`.
+The configured name does not prove container existence, approval, access or
+Private Link routing. Keep customer documents and indexer data sources out of
+this container. Do not reuse the previously probed identity implicitly.
+
+| Setting / identity | Deployment input / minimum intended grant |
+| --- | --- |
+| `ELV_AUDIT_BACKEND` | `blob` (PoC001 default); no Log Analytics workspace required |
+| `ELV_AUDIT_BLOB_ACCOUNT_URL` | `https://tenxengbenefitaistandard.blob.core.windows.net`, no SAS, credentials, query or container path |
+| `ELV_AUDIT_BLOB_CONTAINER` | `poc001-config-history`, dedicated and private |
+| `ELV_AUDIT_BLOB_WRITER_CLIENT_ID` | Separate VM-attached UAMI client UUID, distinct from all persona UUIDs and the reader; **Storage Blob Data Contributor on this container only** |
+| `ELV_MI_AUDIT_CLIENT_ID` | Existing dedicated audit reader selector; **Storage Blob Data Reader on this container only** |
+
+These are administrator prerequisites, not app provisioning instructions. Do not
+grant account-, subscription- or root-wide data access. A prefix is not an RBAC
+boundary. The application never creates/overwrites the container, changes roles,
+access policies, public access, network rules or retention, and never obtains
+account keys or SAS. Retention/lifecycle decisions remain with the resource owner.
+Windows administrator elevation is not Azure role-assignment authorization.
+Development mode uses the developer credential instead of these VM selectors;
+it does not demonstrate VM writer/reader separation.
+
+The writer attempts one uniquely named JSON block blob with `overwrite=False`
+per application configuration event; there is no shared CSV append. It records
+allowlisted experience/knowledge before/after values, outcome, operation group
+and configured service-persona attribution. It does **not** record direct
+Portal/CLI/seed/provisioning edits or backfill old changes, and it does not prove
+human identity. Do not enter PHI, tokens, secrets or personal data into the
+configuration being recorded. Questions, retrieved documents and model prompts
+are not history payloads.
+
+Missing/invalid Blob settings or writer UUID, storage denial and upload failures
+produce best-effort warnings without changing the configuration write's outcome
+or blocking response generation. Startup deliberately does not validate Blob
+URL/container/writer; normal persona and audit-reader validation is retained.
+Reader failures mean **history unavailable**, not an empty successful result.
+Reads are bounded to at most 30 days and 500 returned events with additional
+listing/download budgets and explicit partial warnings. CSV exports only the
+selected visible rows, quotes fields and neutralizes spreadsheet formulas.
+
+Create-only application writes are **not immutable/WORM storage**: the writer's
+Contributor role permits overwrite/delete, and crashes or storage outages can
+leave gaps. There is no atomic App Configuration/Blob transaction, local outbox
+or automatic Log Analytics fallback. Explicit `ELV_AUDIT_BACKEND=loganalytics`
+is the optional legacy PoC001 path; PoC002 remains LA-required regardless of this
+environment value.
+
+Deploy the matching application integration, dependencies and environment
+settings before accepting UI history/warnings/CSV. Nothing here automatically
+creates resources or grants roles. See the
+[PoC001 runbook](../../pocs/001-config-driven-responses/README.md) and
+[Linux deployment example](../redhat/poc001.env.example). A successful listing
+probe alone does not verify event uploads, downloads or application integration.
 
 ## Onboarding permissions are different from the read probe
 
@@ -31,7 +91,7 @@ rights or permission to create storage accounts.
 | Upload/update demo files and their metadata | Approved setup operator or dedicated uploader identity | Storage Blob Data Contributor on only the PoC container(s) |
 | Create new containers, if needed | Authorized provisioning operator | Container-create permission; Storage Blob Data Contributor at the account scope is a built-in option but grants access to all account containers/blobs. Prefer admin precreation, then container-scoped upload rights |
 | Pull documents into Search indexes | Identity configured for the Search indexer/data source | Storage Blob Data Reader on the source PoC container(s), with a separate working Search-to-Blob network path |
-| Answer questions in either current PoC | VM runtime/querying personas | No direct Blob permission required by the current application; they query Search and need Search Index Data Reader on their approved indexes |
+| Answer questions in either current PoC | VM runtime/querying personas | No direct Blob permission required for inference/retrieval; they query Search and need Search Index Data Reader on approved indexes. PoC001 history uses separate writer/reader identities above |
 | Administer POSIX ACLs on HNS storage | Designated storage administrator, only if required | Storage Blob Data Owner can provide these extra powers; neither the current seed uploads nor read-only indexers need it |
 
 If the current VM identity is explicitly approved to upload the demo content,
@@ -46,8 +106,9 @@ account properties, private endpoints and DNS are separate administrator operati
 
 ### Reuse safely for both PoCs
 
-Recommended layout: reuse the storage **account** and use one PoC-only container
-per PoC, either existing dedicated containers or newly approved ones. The existing
+Recommended knowledge layout: reuse the storage **account** and use one PoC-only
+source container per PoC, plus PoC001's separate history container above. Use
+existing dedicated containers or newly approved ones. The existing
 container can be assigned to one PoC if suitable. Separate containers provide
 clearer permission scopes and avoid mixing unrelated indexed content.
 

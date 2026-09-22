@@ -140,3 +140,69 @@ def role_rows(persona: str) -> list:
             "role": roles.get(store, "no role assigned"),
         })
     return rows
+
+
+def _audit_client_uuid(value):
+    """Normalize nonsecret configured client IDs, never credential/token objects."""
+    from uuid import UUID
+
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    try:
+        identity = UUID(value.strip())
+        return str(identity) if identity.int else None
+    except ValueError:
+        return None
+
+
+def audit_writer_credential():
+    """Select the Blob writer lazily, independently of normal persona validation.
+
+    An existing approved UAMI may be selected explicitly, but it must not be
+    the audit reader or any configured application persona. This validation
+    belongs inside the best-effort history boundary, not application startup.
+    Construction does not request a token or establish Azure role assignments.
+    """
+    from azure.identity import ManagedIdentityCredential
+
+    if not hosting.vm_mode():
+        return DefaultAzureCredential()
+    writer = _audit_client_uuid(os.environ.get("ELV_AUDIT_BLOB_WRITER_CLIENT_ID"))
+    reader = _audit_client_uuid(os.environ.get("ELV_MI_AUDIT_CLIENT_ID"))
+    if writer is None:
+        raise ValueError("ELV_AUDIT_BLOB_WRITER_CLIENT_ID must be a nonzero client UUID.")
+    if reader is None:
+        raise ValueError("An explicit audit reader client UUID is required.")
+    others = {reader}
+    others.update(
+        _audit_client_uuid(os.environ.get(f"ELV_MI_{name.upper()}_CLIENT_ID"))
+        for name in PERSONAS
+    )
+    if writer in others:
+        raise ValueError("The history writer must differ from the reader and persona identities.")
+    return ManagedIdentityCredential(client_id=writer)
+
+
+def actor_metadata(persona) -> dict:
+    """Return configured service-identity attribution, NOT authenticated humanity.
+
+    No credential is constructed and no token/claims are inspected. Development
+    only consults the existing roles mapping for its clientId, never returning
+    an entry, secret, tenant, display name, or developer sign-in identity.
+    Missing or malformed metadata must never prevent a configuration mutation.
+    """
+    result = {"actor_persona": None, "actor_client_id": None}
+    try:
+        if not isinstance(persona, str) or persona not in PERSONAS:
+            return result
+        result["actor_persona"] = persona
+        if hosting.vm_mode():
+            value = os.environ.get(f"ELV_MI_{persona.upper()}_CLIENT_ID")
+        else:
+            entry = ((_roles_file().get("personas") or {}).get(persona) or {})
+            value = entry.get("clientId")
+        result["actor_client_id"] = _audit_client_uuid(value)
+    except Exception:
+        # Metadata failures do not change the result of the underlying action.
+        pass
+    return result

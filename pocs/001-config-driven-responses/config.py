@@ -15,12 +15,20 @@ this module is a real 403 returned by Azure, not an application-side check.
 """
 
 import os
+from dataclasses import dataclass, field
 from functools import lru_cache
+from uuid import uuid4
 
 from azure.appconfiguration import AzureAppConfigurationClient, ConfigurationSetting
-from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
+from azure.core import MatchConditions
+from azure.core.exceptions import (
+    ClientAuthenticationError, HttpResponseError, ResourceNotFoundError,
+    ServiceRequestError, ServiceResponseError,
+)
 
+import change_history
 import rbac
+from search_settings import validate_settings
 
 EXPERIENCE_PREFIX = "experience:"
 
@@ -79,6 +87,43 @@ class CredentialError(Exception):
         self.store = store
         self.detail = detail
         super().__init__("Could not sign in as this identity.")
+
+
+@dataclass
+class MutationResult:
+    """Actual write outcomes, separately from best-effort history persistence."""
+
+    operation_id: str = field(default_factory=lambda: str(uuid4()))
+    changed_keys: list[str] = field(default_factory=list)
+    unchanged_keys: list[str] = field(default_factory=list)
+    audit_warnings: list[str] = field(default_factory=list)
+    failed_key: str | None = None
+    not_attempted: list[str] = field(default_factory=list)
+    outcome: str = "success"
+
+
+def _record(persona, **event) -> list[str]:
+    # Even malformed history configuration must not turn a completed change
+    # into a failed save or hide the original App Configuration exception.
+    try:
+        return change_history.record_event({**event, **rbac.actor_metadata(persona)})
+    except Exception:
+        return ["Change history was not recorded; the configuration outcome is unchanged."]
+
+
+def _failure(exc, write_issued=False) -> tuple[str, str]:
+    if isinstance(exc, CredentialError):
+        return "failed", "authentication"
+    if isinstance(exc, AccessDenied):
+        return "denied", "authorization"
+    status = getattr(exc, "status_code", None)
+    if status in (409, 412):
+        return "conflict", "conflict"
+    if isinstance(exc, (ServiceRequestError, ServiceResponseError, TimeoutError)):
+        return ("unknown" if write_issued else "failed"), "connection"
+    if isinstance(exc, ValueError):
+        return "failed", "validation"
+    return ("unknown" if write_issued else "failed"), "service"
 
 
 def store_endpoint(store: str) -> str:
@@ -140,41 +185,171 @@ def load_knowledge(label: str = DRAFT_LABEL, store: str = "production", persona=
 
 def set_value(short_key: str, value: str, store: str = "draft",
               label: str = DRAFT_LABEL, persona=None,
-              prefix: str = EXPERIENCE_PREFIX):
-    """Write one configuration key. Requires App Configuration Data Owner."""
-    setting = ConfigurationSetting(
-        key=f"{prefix}{short_key}", label=label, value=value
-    )
-    return _guard(
-        f"update {short_key}",
-        store,
-        lambda: _client(store, persona).set_configuration_setting(setting),
+              prefix: str = EXPERIENCE_PREFIX, *, operation_id=None,
+              operation="save", force=False) -> MutationResult:
+    """Conditionally write one approved setting, then record app-only history.
+
+    Reads before-values under the same persona, preserves metadata and uses its
+    ETag to prevent a concurrent write invalidating the recorded delta. Ordinary
+    no-ops do not write or create change events; permission probes explicitly
+    force a same-value write. An exception retains its type and carries
+    mutation_result for partial/warning display. There is no cross-service
+    transaction: audit failure never retries or rolls back a configuration write.
+    """
+    key = f"{prefix}{short_key}"
+    if key not in change_history.CONFIG_KEYS or store not in STORE_ENV or label not in PROFILE_LABELS:
+        raise ValueError("Only the approved configuration keys, stores and profile labels are editable.")
+    if not isinstance(value, str) or len(value) > change_history.MAX_VALUE_CHARS:
+        raise ValueError("Configuration value must be text of at most 8192 characters.")
+    if prefix == KNOWLEDGE_PREFIX:
+        value = validate_settings({short_key: value})[short_key]
+    result = MutationResult(operation_id=operation_id or str(uuid4()))
+    before = after = None
+    old_known = False
+    write_issued = False
+    try:
+        client = _client(store, persona)
+
+        def read_before():
+            try:
+                return client.get_configuration_setting(key=key, label=label)
+            except ResourceNotFoundError:
+                return None
+
+        before = _guard(f"read {short_key} before update", store, read_before)
+        old_known = True
+        if force:
+            # The permission probe must rewrite the *fresh* value, not an older
+            # profile-cache value, and must never recreate a deleted setting.
+            if before is None:
+                raise ValueError("The permission-probe setting disappeared; refresh before checking again.")
+            value = before.value
+        if before is not None and before.value == value and not force:
+            result.unchanged_keys.append(key)
+            result.outcome = "unchanged"
+            return result
+        if before is not None and not before.etag:
+            raise ValueError("The current setting has no ETag; refresh before editing.")
+        setting = ConfigurationSetting(
+            key=key, label=label, value=value,
+            content_type=getattr(before, "content_type", None),
+            tags=dict(getattr(before, "tags", None) or {}),
+        )
+        write_issued = True
+        after = _guard(
+            f"update {short_key}", store,
+            lambda: client.add_configuration_setting(setting) if before is None else
+            client.set_configuration_setting(
+                setting, etag=before.etag, match_condition=MatchConditions.IfNotModified,
+            ),
+        )
+        result.changed_keys.append(key)
+    except Exception as exc:
+        result.outcome, category = _failure(exc, write_issued)
+        result.failed_key = key
+        result.audit_warnings.extend(_record(
+            persona, operation_id=result.operation_id, operation=operation, store=store,
+            label=label, key=key, old_value=getattr(before, "value", None),
+            new_value=value, old_value_known=old_known, old_etag=getattr(before, "etag", None),
+            new_etag=None, outcome=result.outcome, error_category=category,
+        ))
+        exc.mutation_result = result
+        raise
+    result.audit_warnings.extend(_record(
+        persona, operation_id=result.operation_id, operation=operation, store=store,
+        label=label, key=key, old_value=getattr(before, "value", None), new_value=value,
+        old_value_known=old_known, old_etag=getattr(before, "etag", None),
+        new_etag=getattr(after, "etag", None), outcome="allowed" if force else "success",
+        error_category=None,
+    ))
+    return result
+
+
+def _write_batch(values: dict, store: str, persona, operation="save") -> MutationResult:
+    """Stop at the first config failure and report partial application honestly."""
+    result = MutationResult()
+    keys = sorted(values)
+    for position, key in enumerate(keys):
+        prefix, short_key = key.split(":", 1)
+        try:
+            item = set_value(
+                short_key, values[key], store=store, persona=persona, prefix=prefix + ":",
+                operation_id=result.operation_id,
+                operation="publish_key" if operation == "publish" else operation,
+            )
+        except Exception as exc:
+            item = getattr(exc, "mutation_result", MutationResult())
+            result.audit_warnings.extend(item.audit_warnings)
+            result.failed_key = key
+            result.not_attempted = keys[position + 1:]
+            result.outcome = "partial" if result.changed_keys else item.outcome
+            if operation == "publish":
+                result.audit_warnings.extend(_record_summary(result, persona))
+            exc.mutation_result = result
+            raise
+        result.changed_keys.extend(item.changed_keys)
+        result.unchanged_keys.extend(item.unchanged_keys)
+        result.audit_warnings.extend(item.audit_warnings)
+    result.outcome = "success" if result.changed_keys else "unchanged"
+    if operation == "publish":
+        result.audit_warnings.extend(_record_summary(result, persona))
+    return result
+
+
+def _record_summary(result, persona) -> list[str]:
+    return _record(
+        persona, operation_id=result.operation_id, operation="publish_summary",
+        store="production", label=DRAFT_LABEL, key=None, old_value=None, new_value=None,
+        old_value_known=False, old_etag=None, new_etag=None, outcome=result.outcome,
+        error_category=None, succeeded_keys=result.changed_keys,
+        failed_key=result.failed_key, not_attempted=result.not_attempted,
     )
 
 
-def publish_draft(persona=None) -> list:
-    """Copy the draft profile into the production candidate profile.
+def save_knowledge(settings: dict, persona=None) -> MutationResult:
+    """Validate the entire Search form before writing only changed draft keys."""
+    normalized = validate_settings(settings)
+    if any(len(value) > change_history.MAX_VALUE_CHARS for value in normalized.values()):
+        raise ValueError("Search settings must not exceed 8192 characters per value.")
+    return _write_batch({KNOWLEDGE_PREFIX + key: value for key, value in normalized.items()},
+                        "draft", persona)
+
+
+def publish_draft(persona=None) -> MutationResult:
+    """Copy a captured draft into production candidate, with grouped history.
 
     Requires read on draft and write on production, so only the approver
-    succeeds. The designer is denied on the first write, leaving production
-    untouched.
+    can change production. Writes are conditional per key, NOT an atomic batch.
+    Validate all known values before the first write and preserve both prefixes.
     """
-    published = []
-    found_any = False
-    for prefix in (EXPERIENCE_PREFIX, KNOWLEDGE_PREFIX):
-        draft = load_profile(DRAFT_LABEL, store="draft", persona=persona, prefix=prefix)
-        if draft:
-            found_any = True
-        for short_key, value in sorted(draft.items()):
-            set_value(short_key, value, store="production", label=DRAFT_LABEL,
-                      persona=persona, prefix=prefix)
-            published.append(f"{prefix}{short_key}")
-    if not found_any:
-        raise RuntimeError("The draft profile is empty. Run scripts/seed-config.ps1.")
-    return published
+    result = MutationResult()
+    try:
+        values = {}
+        for prefix in (EXPERIENCE_PREFIX, KNOWLEDGE_PREFIX):
+            draft = load_profile(DRAFT_LABEL, store="draft", persona=persona, prefix=prefix)
+            if any(prefix + key not in change_history.CONFIG_KEYS for key in draft):
+                raise ValueError("Draft contains unsupported settings; review before publication.")
+            if prefix == KNOWLEDGE_PREFIX and draft:
+                normalized = validate_settings(draft)
+                draft = {key: normalized[key] for key in draft}
+            for key, value in draft.items():
+                full_key = prefix + key
+                if full_key not in change_history.CONFIG_KEYS:
+                    raise ValueError("Draft contains unsupported settings; review before publication.")
+                if not isinstance(value, str) or len(value) > change_history.MAX_VALUE_CHARS:
+                    raise ValueError("Draft contains an invalid or oversized value.")
+                values[full_key] = value
+        if not values:
+            raise ValueError("The draft profile is empty. Seed or save a draft before publishing.")
+    except Exception as exc:
+        result.outcome, _ = _failure(exc)
+        result.audit_warnings.extend(_record_summary(result, persona))
+        exc.mutation_result = result
+        raise
+    return _write_batch(values, "production", persona, operation="publish")
 
 
-def _rewrite_first_value(store: str, label: str, persona) -> None:
+def _rewrite_first_value(store: str, label: str, persona) -> MutationResult:
     """Write a value back unchanged.
 
     The write still requires Data Owner, so it proves permission without
@@ -184,36 +359,50 @@ def _rewrite_first_value(store: str, label: str, persona) -> None:
     if not profile:
         raise RuntimeError(f"The {label} profile in the {store} store is empty.")
     short_key, value = sorted(profile.items())[0]
-    set_value(short_key, value, store=store, label=label, persona=persona)
+    return set_value(short_key, value, store=store, label=label, persona=persona,
+                     operation="permission_probe", force=True)
 
 
 def probe(persona: str) -> list:
     """Attempt each governed operation and report what Azure actually allowed."""
     results = []
 
-    def attempt(operation, action):
+    def attempt(operation, store, action, write=False):
+        warnings = []
+        failure = None
         try:
-            action()
-            results.append({"operation": operation, "allowed": True,
-                            "outcome": "Allowed"})
-        except AccessDenied:
-            results.append({"operation": operation, "allowed": False,
-                            "outcome": "Denied by Azure (403)"})
-        except CredentialError:
-            results.append({"operation": operation, "allowed": None,
-                            "outcome": "Sign-in failed: check the configured Azure identity"})
+            result = action()
+            allowed, outcome, event_outcome = True, "Allowed", "allowed"
+            if write:
+                warnings.extend(result.audit_warnings)
         except Exception as exc:  # configuration gaps, not authorization
-            results.append({"operation": operation, "allowed": None,
-                            "outcome": f"Inconclusive: {exc}"})
+            failure = exc
+            event_outcome, _ = _failure(exc)
+            allowed = False if isinstance(exc, AccessDenied) else None
+            outcome = ("Denied by Azure (403)" if allowed is False else
+                       "Sign-in failed" if isinstance(exc, CredentialError) else
+                       "Inconclusive: check configuration or connectivity")
+            warnings.extend(getattr(exc, "mutation_result", MutationResult()).audit_warnings)
+        # Internal writes already recorded themselves. Read probes or failure
+        # before reaching set_value get one summary, without duplicate events.
+        if not write or (failure is not None and not hasattr(failure, "mutation_result")):
+            warnings.extend(_record(
+                persona, operation_id=str(uuid4()), operation="permission_probe", store=store,
+                label=DRAFT_LABEL, key=None, old_value=None, new_value=None,
+                old_value_known=False, old_etag=None, new_etag=None,
+                outcome=event_outcome, error_category=_failure(failure)[1] if failure else None,
+            ))
+        results.append({"operation": operation, "allowed": allowed,
+                        "outcome": outcome, "audit_warnings": warnings})
 
-    attempt("Read live experience",
+    attempt("Read live experience", "production",
             lambda: load_profile(DRAFT_LABEL, "production", persona))
-    attempt("Read draft experience",
+    attempt("Read draft experience", "draft",
             lambda: load_profile(DRAFT_LABEL, "draft", persona))
-    attempt("Edit draft experience",
-            lambda: _rewrite_first_value("draft", DRAFT_LABEL, persona))
-    attempt("Publish to production",
-            lambda: _rewrite_first_value("production", DRAFT_LABEL, persona))
+    attempt("Edit draft experience", "draft",
+            lambda: _rewrite_first_value("draft", DRAFT_LABEL, persona), write=True)
+    attempt("Publish to production", "production",
+            lambda: _rewrite_first_value("production", DRAFT_LABEL, persona), write=True)
     return results
 
 

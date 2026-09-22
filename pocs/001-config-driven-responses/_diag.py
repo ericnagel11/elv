@@ -7,11 +7,12 @@ import config as cfg
 import knowledge
 import prompt
 import rbac
+from search_settings import DEFAULT_QUESTION
 
 persona = rbac.DEFAULT_PERSONA
 exp = cfg.load_profile("candidate", "production", persona)
 scope = knowledge.settings_from_profile(cfg.load_knowledge(cfg.DRAFT_LABEL, "draft", persona))
-q = "How long do I have to return something, and is there a fee?"
+q = DEFAULT_QUESTION
 found = knowledge.search(q, scope, persona)
 print("filter:", scope.get("filter"))
 print("docs:", [(d["title"], d["status"]) for d in found["documents"]])

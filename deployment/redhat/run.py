@@ -11,6 +11,15 @@ from uuid import UUID
 POCS = {"001": "001-config-driven-responses", "002": "002-regional-multilingual-experience"}
 
 
+def uses_log_analytics(poc):
+    """PoC002 stays legacy; only explicit opt-in enables LA for PoC001.
+
+    Do not validate Blob settings here. History configuration/writer failures
+    belong to PoC001's best-effort warning boundary, not service startup.
+    """
+    return poc == "002" or os.environ.get("ELV_AUDIT_BACKEND", "blob").strip().lower() == "loganalytics"
+
+
 def command_for(poc, component, python, project):
     if poc not in POCS:
         raise ValueError("Unknown PoC.")
@@ -49,7 +58,10 @@ def validate_settings(poc):
             raise ValueError(f"{key} must contain an HTTPS service endpoint, without credentials or a path.")
     if os.environ["AZURE_APPCONFIG_ENDPOINT"].lower().rstrip("/") == os.environ["AZURE_APPCONFIG_DRAFT_ENDPOINT"].lower().rstrip("/"):
         raise ValueError("Live and draft endpoints must be different stores.")
-    for key in ("AZURE_TENANT_ID", "AZURE_LOG_ANALYTICS_WORKSPACE_ID"):
+    uuid_keys = ["AZURE_TENANT_ID"]
+    if uses_log_analytics(poc):
+        uuid_keys.append("AZURE_LOG_ANALYTICS_WORKSPACE_ID")
+    for key in uuid_keys:
         try:
             if not UUID(os.environ.get(key, "")).int:
                 raise ValueError
@@ -88,7 +100,8 @@ def main():
     import hosting
     import rbac
     hosting.identity_ids(rbac.PERSONAS)
-    hosting.audit_resource_ids()
+    if uses_log_analytics(args.poc):
+        hosting.audit_resource_ids()
     os.chdir(project)
     os.execv(sys.executable, command)
 
