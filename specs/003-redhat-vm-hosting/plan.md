@@ -198,3 +198,33 @@ restrictions, no-source behavior, editor version checks, UI toggle/citations,
 knowledge-only initialization, existing PoC/shared-hosting regressions and the
 approved live RAG comparison. Document observed metadata values, supported modes
 and remaining quality/vector/document-authorization limitations separately.
+
+## Follow-up: reconcile healthcare branch on the VM (2026-09-22)
+
+Repair merge `d706a82` while retaining the Windows VM deployment and the other
+branch's healthcare prompts and Search configuration improvements. Existing
+Azure resources, identity, data, field mappings and runtime JSON are authoritative.
+No resource migration, roles, seeding, service restart or live inference is part
+of this source repair; the user will test locally after deployment.
+
+Restore configuration imports/conflict handling and comparison mutation guards
+without discarding full-mode mutation outcomes or best-effort history. Normalize
+core Search controls while preserving explicit blank filters and VM field mappings.
+Restore the healthcare runtime tests alongside VM tests: full previews retain
+disabled/unavailable behavior, while VM grounding keeps opt-in, allowed-index
+and no-model-on-empty protections. Retain healthcare privacy/provenance rules
+and the same claims-and-appeals question in both UI response modes.
+
+Reuse the six-control Search form in the VM Configuration tab with approved-index
+options and keyword-only mode. Save to the existing live store with complete
+validation, loaded ETags, unchanged-value skips and partial-write reporting.
+Keep the individual mapping editor, full-mode draft editor and history code.
+Do not enable Blob history or additional identities on this VM implicitly.
+
+Validate real source through offline backend, prompts, runtime, forms, Streamlit
+and shared deployment tests. Stage the incoming Blob SDK in a temporary test
+folder to avoid modifying running dependencies. The user must stop both processes,
+install matching requirements into the PoC venv, then restart via the Windows
+launcher. The grouped-save adapter reuses existing contracts because the full
+demo's draft writer is deliberately unavailable in comparison mode; no new
+framework or Azure service is required.

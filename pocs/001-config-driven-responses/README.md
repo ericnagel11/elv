@@ -24,6 +24,13 @@ legacy LA-only Audit tab or retail-prefilled question indicates an older
 deployment, **not** a reason to provision Log Analytics. Target Azure acceptance
 remains required; local mocked tests do not establish live Blob permissions.
 
+**Current VM deployment:** follow the
+[Windows runbook](../../deployment/windows/README.md), not the development or
+full-governance setup below. It keeps the existing single managed identity,
+App Configuration/OpenAI/Search resources, external runtime JSON and localhost
+listeners. Healthcare prompts and the grouped RAG form work in that mode too;
+separate draft identities and Blob history are not enabled on this VM.
+
 ## What changes without a code release
 
 - `experience:*` configures persona, tone, verbosity, reading level, response
@@ -49,11 +56,16 @@ newly published configuration.
 The comparison extension accepts `baseline`/`candidate` and grounding intent,
 not arbitrary prompt assets, stores, labels, filters or credentials. The runtime
 requires **both** a grounding request and published `knowledge:enabled=true`.
-A caller cannot override disabled server configuration. A disabled scope uses
-the experience prompt and makes **zero Search calls**, including direct
+A caller cannot override disabled server configuration. In the full demo, a
+disabled scope uses the experience prompt and makes **zero Search calls**, including direct
 `run_grounded()` previews. It can still call OpenAI; disabled retrieval does not
 mean offline generation. Missing references must not be reported as successful
 grounding.
+
+The VM comparison is stricter: an explicitly grounded request with disabled or
+unconfigured Search is rejected; empty retrieval returns a no-sources result
+without inference. Turning off the grounding toggle still permits ungrounded
+healthcare guidance. Both modes retain the same member-support question.
 
 Publishing (including partial failure) automatically clears the active UI A2A
 context IDs, cached profiles/scopes and displayed results. Regenerate to resolve
@@ -79,6 +91,13 @@ with ETag conflict checks under the same managed identity. It does not simulate
 separate Azure roles or a draft approval workflow. Full governance remains the
 default outside comparison mode.
 
+The grouped **Search configuration** form is available under **Configuration >
+Knowledge**. Load current settings, edit the six controls, and explicitly save.
+Approved-index and keyword-only restrictions remain, blank filters need
+acknowledgment, and field mappings can still be edited individually. Version
+checks and partial-result reporting prevent misleading claims of atomic saves.
+Existing Azure settings are not migrated by new industry defaults.
+
 Optional [existing-index RAG](../../deployment/windows/README.md#ground-responses-with-an-existing-search-index)
 maps `Content`, `Title`, `Status`, `State` and source metadata through
 `knowledge:*` settings. The first integration uses keyword retrieval from the
@@ -92,6 +111,9 @@ and HTTPS are deferred by the customer; the Windows runbook retains the proposed
 administrator steps for future use. Persistent Windows services are not installed.
 
 ### Red Hat VM / existing Azure services
+
+The following draft, persona and history setup applies to the separate full
+governance demo, not the active Windows single-identity comparison.
 
 ### Runtime boundaries
 
@@ -139,7 +161,7 @@ Windows; it is not a Windows service launcher.
 
 `ELV_HOSTING_MODE=azure-vm` uses explicit VM-attached managed identities and ignores
 dotenv and local persona-secret files. Supply process/service environment values
-for both the UI and agent. Normal persona and dedicated audit-reader UUIDs must
+for both the UI and agent. In the full demo, persona and audit-reader UUIDs must
 remain complete, nonzero and distinct; the extra history writer is checked lazily
 inside the best-effort history boundary. The VM and all presenters are one trust
 boundary, not per-person or per-process identity isolation.
@@ -311,7 +333,9 @@ index merely to match repository defaults.
 ## Healthcare Search controls
 
 The dedicated Search editor is under **Governance and RBAC > Search configuration**, separate
-from experience wording. The six existing keys and their contract are:
+from experience wording, in the full demo. On the VM use **Configuration >
+Knowledge > Search configuration** with its deployment restrictions. The six
+shared keys and their full-demo contract are:
 
 | Key | Control / values | Missing-setting default |
 |---|---|---|
@@ -330,9 +354,11 @@ or numeric settings simply by opening the editor. Deployment acceptance should
 verify all six controls, stored-versus-fallback visibility, validation before
 writes and read-only/default visibility when draft access is unavailable.
 
-[knowledge.py](knowledge.py) selects `title`, `content`, `url`, `industry`,
-`audience`, `status` and `effective_date`; the target must expose these fields
-and support the filter's fields. Semantic mode requires an appropriate tier and
+[knowledge.py](knowledge.py) defaults to `title`, `content`, `url`, `industry`,
+`audience`, `status` and `effective_date` for the sample index. Existing-index
+mappings override these names and can omit optional fields. The target must
+support its mapped fields and filter; an explicit blank filter stays blank.
+Semantic mode requires an appropriate tier and
 the existing `kb-semantic` configuration; reported keyword fallback is not proof
 of semantic operation. No vector/embedding query is sent by this code. A `top=0`
 connectivity probe or an index name containing "vector" does not prove this

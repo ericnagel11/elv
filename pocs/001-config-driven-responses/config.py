@@ -17,12 +17,16 @@ locally, before any Azure request, and do not change the identity's Azure roles.
 
 import os
 import re
+from dataclasses import dataclass, field
 from functools import lru_cache
 from uuid import uuid4
 
 from azure.appconfiguration import AzureAppConfigurationClient, ConfigurationSetting
 from azure.core import MatchConditions
-from azure.core.exceptions import ClientAuthenticationError, HttpResponseError, ResourceModifiedError, ResourceNotFoundError
+from azure.core.exceptions import (
+    ClientAuthenticationError, HttpResponseError, ResourceModifiedError,
+    ResourceNotFoundError, ServiceRequestError, ServiceResponseError,
+)
 
 import change_history
 import rbac
@@ -114,6 +118,10 @@ class CredentialError(Exception):
         self.store = store
         self.detail = detail
         super().__init__("Could not sign in as this identity.")
+
+
+class ConfigurationConflict(RuntimeError):
+    """A live setting changed or disappeared since the editor loaded it."""
 
 
 @dataclass
@@ -264,6 +272,53 @@ def update_knowledge_setting(label: str, short_key: str, value: str, expected_et
     return _update_live_setting(label, short_key, value, expected_etag, KNOWLEDGE_PREFIX)
 
 
+def load_live_knowledge(label: str) -> dict:
+    """Load the six existing controls and versions without inventing stored values."""
+    settings, etags = {}, {}
+    for key in EDITABLE_KNOWLEDGE_KEYS:
+        current = load_editable_setting(label, key, prefix=KNOWLEDGE_PREFIX)
+        settings[key], etags[key] = current["value"], current["etag"]
+    return {"settings": settings, "etags": etags}
+
+
+def update_live_knowledge(label: str, settings: dict, expected_etags: dict) -> MutationResult:
+    """Save validated live controls, preserving field mappings and per-key ETags."""
+    _require_editable_setting(label, "enabled", KNOWLEDGE_PREFIX)
+    required = set(EDITABLE_KNOWLEDGE_KEYS)
+    if not isinstance(settings, dict) or set(settings) != required:
+        raise ValueError("Load and submit all six Search controls before saving.")
+    if not isinstance(expected_etags, dict) or set(expected_etags) != required:
+        raise ValueError("Load every Search setting version before saving.")
+    values = validate_settings(settings)
+    for key, value in values.items():
+        validate_knowledge_value(key, value)
+        etag = expected_etags[key]
+        if not isinstance(etag, str) or not etag.strip() or etag == "*":
+            raise ValueError("Load every Search setting version before saving.")
+
+    current = load_live_knowledge(label)
+    if current["etags"] != expected_etags:
+        raise ConfigurationConflict("Search settings changed. Reload them before saving again.")
+    result = MutationResult()
+    for position, key in enumerate(EDITABLE_KNOWLEDGE_KEYS):
+        full_key = f"{KNOWLEDGE_PREFIX}{key}"
+        if current["settings"][key] == values[key]:
+            result.unchanged_keys.append(full_key)
+            continue
+        try:
+            update_knowledge_setting(label, key, values[key], expected_etags[key])
+        except Exception as exc:
+            outcome = "conflict" if isinstance(exc, ConfigurationConflict) else _failure(exc, write_issued=True)[0]
+            result.outcome = "partial" if result.changed_keys else outcome
+            result.failed_key = full_key
+            result.not_attempted = [f"{KNOWLEDGE_PREFIX}{name}" for name in EDITABLE_KNOWLEDGE_KEYS[position + 1:]]
+            exc.mutation_result = result
+            raise
+        result.changed_keys.append(full_key)
+    result.outcome = "success" if result.changed_keys else "unchanged"
+    return result
+
+
 def _update_live_setting(label: str, short_key: str, value: str, expected_etag: str, prefix: str) -> dict:
     if not isinstance(expected_etag, str) or not expected_etag.strip() or expected_etag == "*":
         raise ValueError("Load the current setting version before saving.")
@@ -302,6 +357,7 @@ def set_value(short_key: str, value: str, store: str = "draft",
     mutation_result for partial/warning display. There is no cross-service
     transaction: audit failure never retries or rolls back a configuration write.
     """
+    rbac.require_full_demo("Configuration editing")
     key = f"{prefix}{short_key}"
     if key not in change_history.CONFIG_KEYS or store not in STORE_ENV or label not in PROFILE_LABELS:
         raise ValueError("Only the approved configuration keys, stores and profile labels are editable.")
@@ -414,6 +470,7 @@ def _record_summary(result, persona) -> list[str]:
 
 def save_knowledge(settings: dict, persona=None) -> MutationResult:
     """Validate the entire Search form before writing only changed draft keys."""
+    rbac.require_full_demo("Draft configuration editing")
     normalized = validate_settings(settings)
     if any(len(value) > change_history.MAX_VALUE_CHARS for value in normalized.values()):
         raise ValueError("Search settings must not exceed 8192 characters per value.")
@@ -428,6 +485,7 @@ def publish_draft(persona=None) -> MutationResult:
     can change production. Writes are conditional per key, NOT an atomic batch.
     Validate all known values before the first write and preserve both prefixes.
     """
+    rbac.require_full_demo("Publishing")
     result = MutationResult()
     try:
         values = {}

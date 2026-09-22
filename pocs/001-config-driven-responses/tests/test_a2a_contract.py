@@ -1,12 +1,16 @@
 import asyncio
+import os
 import unittest
+from unittest.mock import Mock, patch
 
 import httpx
 from a2a.helpers import new_text_message
+from azure.core.exceptions import HttpResponseError
 
 from a2a_agent import EXPERIENCE_PROFILE_EXTENSION, build_agent_card, parse_request_options
-from a2a_client import ConfiguredAgentClient
+from a2a_client import A2AClientError, ConfiguredAgentClient
 from a2a_server import create_app
+from experience_runtime import ConfiguredResponseRuntime
 from search_settings import DEFAULT_QUESTION
 
 
@@ -85,6 +89,34 @@ class A2AContractTests(unittest.TestCase):
         self.assertEqual(response["result"]["messages"], [])
         self.assertEqual(len(runtime.calls), 1)
         self.assertEqual(runtime.calls[0][1:], (DEFAULT_QUESTION, "candidate", True))
+
+    def test_rejected_search_filter_reaches_client_without_model_call_or_raw_details(self):
+        settings = {"enabled": "true", "index": "medical-policies-vector", "filter": "status ne 'Revised'"}
+        runtime = ConfiguredResponseRuntime(
+            profile_loader=Mock(return_value={"tone": "warm", "prompt_asset": "response:v1"}),
+            knowledge_loader=Mock(return_value=settings),
+        )
+        app = create_app(runtime=runtime, base_url="http://testserver")
+        client = ConfiguredAgentClient(base_url="http://testserver", transport=httpx.ASGITransport(app=app))
+        error = HttpResponseError("private response details")
+        error.status_code = 400
+        environment = {
+            "ELV_HOSTING_MODE": "azure-vm", "ELV_DEMO_MODE": "comparison", "ELV_ENABLE_RAG": "true",
+            "ELV_SEARCH_ALLOWED_INDEXES": "medical-policies-vector",
+            "AZURE_SEARCH_ENDPOINT": "https://example.search.windows.net",
+        }
+        with patch.dict(os.environ, environment, clear=True), \
+                patch("knowledge._client") as search_client, \
+                patch("experience_runtime.generate_response") as generate:
+            search_client.return_value.search.side_effect = error
+            with self.assertRaisesRegex(A2AClientError, "Azure AI Search rejected the query") as caught:
+                asyncio.run(client.invoke_async(DEFAULT_QUESTION, "candidate", grounded=True))
+            self.assertIn("HTTP 400", str(caught.exception))
+            self.assertNotIn("private response details", str(caught.exception))
+            self.assertNotIn("The configured response failed", str(caught.exception))
+            self.assertEqual(search_client.return_value.search.call_count, 1)
+            self.assertEqual(search_client.return_value.search.call_args.kwargs["filter"], settings["filter"])
+            generate.assert_not_called()
 
 
 if __name__ == "__main__":

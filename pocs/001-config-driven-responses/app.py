@@ -61,10 +61,7 @@ def cached_knowledge(label: str, store: str, persona: str) -> dict:
 
 
 def clear_comparison_state() -> None:
-    cached_profile.clear()
-    cached_knowledge.clear()
-    for key in ("a2a_baseline_context_id", "a2a_candidate_context_id", "results"):
-        st.session_state.pop(key, None)
+    invalidate_configuration(published=True)
 
 
 @st.cache_resource(show_spinner=False)
@@ -77,6 +74,7 @@ def invalidate_configuration(published=False):
     cached_knowledge.clear()
     reset_results(st.session_state, published=published)
     st.session_state.pop("history_page", None)
+    st.session_state.pop("live_search_loaded", None)
 
 
 def finish_mutation(action, *, published=False):
@@ -90,7 +88,7 @@ def finish_mutation(action, *, published=False):
             notice["error"] = "Azure denied the configuration operation for this persona."
         elif isinstance(exc, CredentialError):
             notice["error"] = "The acting identity could not authenticate to App Configuration."
-        elif isinstance(exc, ValueError):
+        elif isinstance(exc, (ValueError, cfg.ConfigurationConflict)):
             notice["error"] = str(exc)
         else:
             notice["error"] = "Configuration operation failed. Review the outcome below before retrying."
@@ -131,6 +129,40 @@ def search_editor(scope, editable):
     )
     if values is not None:
         finish_mutation(lambda: cfg.save_knowledge(values, persona=persona))
+
+
+def live_search_editor(label: str) -> None:
+    loaded = st.session_state.get("live_search_loaded")
+    if loaded and loaded["label"] != label:
+        st.session_state.pop("live_search_loaded")
+        loaded = None
+    try:
+        if st.button("Load Search settings", icon=":material/refresh:"):
+            loaded = {"label": label, **cfg.load_live_knowledge(label)}
+            for key in list(st.session_state):
+                if key.startswith("app:production:") and ":search:" in key:
+                    st.session_state.pop(key, None)
+            st.session_state["live_search_loaded"] = loaded
+        if not loaded:
+            return
+        revision = hashlib.sha256(json.dumps(loaded["etags"], sort_keys=True).encode()).hexdigest()[:16]
+        values = render_search_form(
+            st, loaded["settings"], editable=True,
+            widget_key=f"app:production:{label}:{revision}",
+            index_options=rbac.approved_search_indexes(), query_modes=("simple",),
+        )
+        if values is not None:
+            st.session_state.pop("live_config_loaded", None)
+            finish_mutation(
+                lambda: cfg.update_live_knowledge(label, values, loaded["etags"]),
+                published=True,
+            )
+    except (AccessDenied, CredentialError) as denied:
+        show_denied(denied)
+    except (ValueError, cfg.ConfigurationConflict, rbac.OperationDisabled) as problem:
+        st.error(str(problem))
+    except AzureError:
+        st.error("App Configuration could not load the Search settings. Check connectivity and access.")
 
 
 def render_blob_history():
@@ -448,6 +480,8 @@ def show_denied(problem) -> None:
 
 
 st.title("Configurable agent responses without a code release")
+st.caption("Healthcare member-support demo. Use synthetic questions only; do not enter patient information.")
+render_mutation_notice()
 
 if comparison:
     if configuration_editing:
@@ -478,15 +512,14 @@ with tab_experience:
             "here until a release approver publishes them."
         )
 
-    grounded_request = st.toggle(
-        "Ground with AI Search", value=False, key="use_search_grounding",
-        on_change=clear_comparison_state,
-    ) if rag_available else False
-    user_message = st.text_area(
-        "Customer message",
-        value=("What documentation is required to establish medical necessity?" if grounded_request else DEFAULT_MESSAGE),
-        height=90,
-    )
+    if comparison:
+        grounded_request = st.toggle(
+            "Ground with AI Search", value=False, key="use_search_grounding",
+            on_change=clear_comparison_state,
+        ) if rag_available else False
+    else:
+        grounded_request = st.checkbox("Use configured Search grounding", value=True)
+    user_message = st.text_area("Member message", value=DEFAULT_MESSAGE, height=90)
 
     if st.button("Generate side-by-side comparison", type="primary"):
         try:
@@ -503,11 +536,10 @@ with tab_experience:
             else:
                 with st.spinner("Creating two A2A response tasks..."):
                     client = configured_agent()
-                    request_options = {"grounded": True} if grounded_request else {}
+                    request_options = {"grounded": grounded_request} if grounded_request or not comparison else {}
                     baseline = client.invoke(
                         user_message,
                         "baseline",
-                        grounded=use_grounding,
                         context_id=st.session_state.get("a2a_baseline_context_id"),
                         **request_options,
                     )
@@ -515,7 +547,6 @@ with tab_experience:
                     candidate = client.invoke(
                         user_message,
                         "candidate",
-                        grounded=use_grounding,
                         context_id=st.session_state.get("a2a_candidate_context_id"),
                         **request_options,
                     )
@@ -579,7 +610,7 @@ with tab_experience:
 if comparison:
     if configuration_editing:
         with tab_configuration:
-            st.subheader("Live experience settings")
+            st.subheader("Live configuration")
             st.warning("Saves change the live profile for all VM users. No draft or approval step applies.")
             saved_key = st.session_state.pop("live_config_saved", None)
             if saved_key:
@@ -591,6 +622,9 @@ if comparison:
                 "Profile", options=cfg.PROFILE_LABELS, index=cfg.PROFILE_LABELS.index("candidate"),
                 key="live_config_profile",
             )
+            if area == "Knowledge":
+                with st.expander("Search configuration", expanded=True):
+                    live_search_editor(edit_profile)
             edit_key = st.selectbox(
                 "Setting", options=editable_keys,
                 format_func=lambda short_key: f"{edit_prefix}{short_key}", key="live_config_key",
@@ -642,10 +676,16 @@ if comparison:
                                 "New value", value=loaded["value"] or "", height=140,
                                 max_chars=cfg.MAX_EDIT_VALUE_LENGTH, key=value_key,
                             )
+                        acknowledge_blank = st.checkbox(
+                            "I acknowledge that a blank filter applies no filter and may broaden retrieval.",
+                            value=False, key=f"{value_key}:ack_no_filter",
+                        ) if area == "Knowledge" and edit_key == "filter" else True
                         save = st.form_submit_button("Save to Azure", type="primary", icon=":material/save:")
                     if save:
                         if new_value == loaded["value"]:
                             st.info("No changes to save.")
+                        elif area == "Knowledge" and edit_key == "filter" and not new_value.strip() and not acknowledge_blank:
+                            st.error("A blank filter applies no filter. Tick the explicit acknowledgement before saving.")
                         else:
                             update_setting = cfg.update_knowledge_setting if area == "Knowledge" else cfg.update_experience_setting
                             saved = update_setting(

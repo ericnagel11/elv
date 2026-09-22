@@ -10,6 +10,13 @@ existing approved access route and use the browser locally. Shared networking
 and HTTPS are deferred; section 7 preserves the administrator handoff for future
 use. The optional live configuration editor below uses the same managed identity.
 
+**Merge alignment, 2026-09-22:** retain this VM launch path and its existing
+Azure endpoints, managed identity, GPT-4o deployment and Search field mappings.
+Healthcare member-support prompts and the grouped Search form are available here.
+The full-demo draft/persona/Blob-history implementation is retained separately;
+it does not require provisioning those resources for this single-identity VM.
+No stored Azure value is migrated by a code update.
+
 The [launcher](run.py) starts either the Streamlit UI or its internal A2A agent.
 It does not install packages, request tokens during validation, change Azure,
 seed configuration, configure services, change firewalls or expose public ports.
@@ -75,7 +82,7 @@ for this comparison milestone.
 
 | Key | Value with label `baseline` | Value with label `candidate` |
 | --- | --- | --- |
-| `experience:persona` | a Contoso customer support agent | a caring Contoso customer support specialist |
+| `experience:persona` | a Contoso Health Plan member support agent | a caring Contoso Health Plan member support specialist |
 | `experience:tone` | neutral and professional | warm, friendly, and empathetic |
 | `experience:verbosity` | brief | concise but complete |
 | `experience:reading_level` | grade 9 | grade 6 |
@@ -84,10 +91,13 @@ for this comparison milestone.
 
 These synthetic values come from the existing
 [seed reference](../../pocs/001-config-driven-responses/scripts/seed-config.ps1).
-Do **not** run the original setup/governance/knowledge/seed/teardown scripts
-unchanged against customer services. They can overwrite settings or provision
-and delete resources. No `knowledge:*` entries are needed for an ungrounded
-comparison; the RAG setup below initializes them separately.
+The table reflects current healthcare defaults, not a migration of stored values.
+Do **not** run provisioning/teardown scripts against customer services. The CLI
+seed/migration script also requires separate review: its healthcare sample filter
+assumes a different schema from this VM's existing index. Use the managed-identity
+initializer here for approved missing entries, not developer CLI credentials.
+No `knowledge:*` entries are needed for an ungrounded comparison; the RAG setup
+below initializes them separately.
 
 ### Explicit initializer
 
@@ -163,6 +173,31 @@ routes (or have the administrator deliver the corpus):
 ```powershell
 & .\pocs\001-config-driven-responses\.venv\Scripts\python.exe -m nltk.downloader cmudict
 ```
+
+### Test an updated or merged checkout
+
+Stop both PoC terminal processes with Ctrl+C before installing dependencies or
+restarting on updated code. Do not recreate the venv, reinitialize stores,
+replace runtime JSON, or run the development launch commands. From the repository
+root, install the declared dependencies and validate the existing configuration:
+
+```powershell
+& .\pocs\001-config-driven-responses\.venv\Scripts\python.exe -m pip install -r .\pocs\001-config-driven-responses\requirements.txt
+& .\pocs\001-config-driven-responses\.venv\Scripts\python.exe -m pip check
+& .\pocs\001-config-driven-responses\.venv\Scripts\python.exe .\deployment\windows\run.py --component ui --config C:\ProgramData\elv\poc001\runtime.json --approved-azure-host --validate-only
+```
+
+Stop on any failed command. The incoming dependency list includes
+`azure-storage-blob`; installing it does not activate Blob history or grant
+permissions. Run section 4's offline tests and restart both components using
+section 5. File watching is disabled, and the agent retains imported modules;
+refreshing the browser alone does not deploy changed Python code.
+
+Use the same synthetic question for both modes:
+`I received a denial notice for my health insurance claim. How can I appeal it?`
+The prompt bodies supply healthcare administrative guidance and privacy limits.
+Existing `experience:persona` and other saved inputs still apply; edit them only
+when desired. Do not rerun initialization to apply new personas or sample filters.
 
 ## 3. External nonsecret configuration
 
@@ -317,6 +352,7 @@ changes the selected profile in the production store.
   Existing tags/content type are preserved, and the SDK uses the loaded ETag
   to reject concurrent changes. Missing settings are not created. A conflict
   requires reloading and reviewing the latest value before another save.
+  A blank knowledge filter also requires explicit acknowledgment before saving.
 5. Return to **Experience comparison** and generate again. A successful save
   clears the editing session's cached results and A2A context IDs, so the next
   requests resolve current Azure configuration without a server restart. Other
@@ -327,6 +363,32 @@ All trusted VM users share this configuration and identity; it is not per-user
 Azure authorization. Generic writes, new keys, deletion, other labels/prefixes,
 Search index/document writes, audit and draft publishing are not exposed by this
 editor. No Azure values are automatically changed by enabling or starting it.
+
+### Grouped Search controls on the VM
+
+Under **Configuration > Knowledge**, select a profile and expand **Search
+configuration**. **Load Search settings** reads the six existing controls and
+their ETags: enabled, index, filter, top-k, query mode and citation style. Opening
+the form alone does not fetch or write values. Missing settings are a preparation
+error, not permission to create defaults silently.
+
+The shared form retains the other branch's validation, stored-versus-default
+display and blank-filter acknowledgment. Its VM index selector uses
+`ELV_SEARCH_ALLOWED_INDEXES`; query mode stays `simple` because semantic/vector
+prerequisites are unverified. Field mappings remain available in the individual
+setting editor below the form.
+
+**Save Search settings** validates the entire form, checks the loaded versions,
+then updates only changed controls under the runtime managed identity. Per-key
+ETag checks preserve metadata and detect concurrent changes. Field mappings,
+experience values, other labels and Search indexes are untouched. The save is
+not atomic: a late conflict may leave earlier writes. The UI shows confirmed
+keys, the failure and keys not attempted, without automatic retry or rollback.
+Reload after a failure; other browser sessions must refresh their own contexts.
+
+Blank `knowledge:filter` remains blank at query time; it is never replaced by the
+healthcare sample's lowercase `industry`/`status` filter. Healthcare defaults apply
+only to absent settings and do not rename this VM's existing index fields.
 
 ### Ground responses with an existing Search index
 

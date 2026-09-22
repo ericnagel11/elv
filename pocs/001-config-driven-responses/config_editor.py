@@ -56,7 +56,9 @@ def _field_caption(st, scope: dict, key: str, initial: dict, invalid: dict) -> N
     st.caption(caption)
 
 
-def render_search_form(st, scope: dict, *, editable: bool, widget_key: str) -> dict | None:
+def render_search_form(st, scope: dict, *, editable: bool, widget_key: str,
+                       index_options: tuple | None = None,
+                       query_modes: tuple = _QUERY_MODES) -> dict | None:
     """Return a fresh, validated six-key string dict only on editable submission.
 
     ``widget_key`` must include the caller's identity/store/label and config
@@ -70,8 +72,16 @@ def render_search_form(st, scope: dict, *, editable: bool, widget_key: str) -> d
     marked defaults; text widgets retain correctable text. Only an explicit
     Save can return those displayed values, and a blank filter also needs its
     acknowledgement. This validates types/ranges, not OData or Search schema.
+    Optional index/mode choices restrict a VM form without changing the full demo.
     """
+    if not query_modes or any(mode not in _QUERY_MODES for mode in query_modes):
+        raise ValueError("Choose supported Search query modes for this form.")
+    if index_options is not None and not index_options:
+        raise ValueError("At least one approved Search index is required.")
     initial, invalid = _initial_values(scope)
+    if initial["query_mode"] not in query_modes:
+        invalid["query_mode"] = "This query mode is not enabled for this deployment."
+        initial["query_mode"] = query_modes[0]
     prefix = f"{widget_key}:search"
     disabled = not editable
     if disabled:
@@ -91,11 +101,18 @@ def render_search_form(st, scope: dict, *, editable: bool, widget_key: str) -> d
             key=f"{prefix}:enabled", disabled=disabled,
         )
         _field_caption(st, scope, "enabled", initial, invalid)
-        values["index"] = st.text_input(
-            "Search index or alias", value=initial["index"],
-            key=f"{prefix}:index", disabled=disabled,
-            help="Existing approved index/alias. Only name syntax is checked, not existence or access.",
-        )
+        if index_options is None:
+            values["index"] = st.text_input(
+                "Search index or alias", value=initial["index"],
+                key=f"{prefix}:index", disabled=disabled,
+                help="Existing approved index/alias. Only name syntax is checked, not existence or access.",
+            )
+        else:
+            values["index"] = st.selectbox(
+                "Search index or alias", index_options,
+                index=index_options.index(initial["index"]) if initial["index"] in index_options else None,
+                key=f"{prefix}:index", disabled=disabled,
+            )
         _field_caption(st, scope, "index", initial, invalid)
         values["filter"] = st.text_area(
             "OData filter", value=initial["filter"], height=120,
@@ -124,9 +141,10 @@ def render_search_form(st, scope: dict, *, editable: bool, widget_key: str) -> d
         )
         _field_caption(st, scope, "top_k", initial, invalid)
         values["query_mode"] = st.selectbox(
-            "Query mode", _QUERY_MODES, index=_QUERY_MODES.index(initial["query_mode"]),
+            "Query mode", query_modes, index=query_modes.index(initial["query_mode"]),
             key=f"{prefix}:query_mode", disabled=disabled,
-            help="Semantic mode requires a compatible index with the kb-semantic semantic configuration.",
+            help=("Semantic mode requires a compatible index with the kb-semantic semantic configuration."
+                  if "semantic" in query_modes else "Keyword retrieval on the approved existing index."),
         )
         _field_caption(st, scope, "query_mode", initial, invalid)
         values["citation_style"] = st.selectbox(
@@ -143,6 +161,12 @@ def render_search_form(st, scope: dict, *, editable: bool, widget_key: str) -> d
         normalized = validate_settings(values)
     except ValueError as exc:
         st.error(str(exc))
+        return None
+    if index_options is not None and normalized["index"] not in index_options:
+        st.error("The Search index is not approved for this deployment.")
+        return None
+    if normalized["query_mode"] not in query_modes:
+        st.error("The query mode is not enabled for this deployment.")
         return None
     if not normalized["filter"] and not acknowledge_blank:
         st.error("A blank filter applies no filter. Tick the explicit acknowledgement before saving.")

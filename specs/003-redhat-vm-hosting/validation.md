@@ -315,3 +315,59 @@ quality; those require a suitable evaluation set and human review.
 Live filtered comparisons and later user changes to knowledge values were not
 performed. The initial filters are blank; changing them remains an explicit
 version-checked UI save. Shared networking/HTTPS remains deferred.
+
+## VM and healthcare merge reconciliation — 2026-09-22
+
+The user authorized repairing merge `d706a82` while retaining the incoming
+healthcare prompts and RAG configuration changes on the already configured
+Windows VM. This record describes the repaired working tree, not the original
+merge commit and not a redeployed/live acceptance result.
+
+### Reconciled behavior
+
+- Restored configuration imports, conflict exceptions and comparison-mode
+  restrictions while retaining the full demo's mutation/history implementation.
+- Corrected UI generation arguments and restored mutation-result notices.
+  Grounded and ungrounded modes use the same healthcare member-support question.
+- Reused the shared Search normalizer, retaining explicit blank filters and the
+  existing index's case-sensitive field mappings. Removed duplicated merge blocks.
+- Restored healthcare provenance/privacy rules and runtime tests lost during the
+  merge. Full-demo previews and strict VM no-source/opt-in behavior both remain.
+- Integrated the shared six-control Search form in the VM's Configuration tab,
+  using the existing production store and managed identity. It validates before
+  writing, checks versions, preserves mappings and reports partial saves. No
+  draft store, new identity or Blob history is implicitly required on the VM.
+
+### Executed verification
+
+- **236 PoC001 tests passed** against actual repaired source, including prompt,
+  Search normalization/mapping, both runtime modes, UI, ETag, partial-save and
+  history behavior. No missing source definitions were injected for this run.
+- **22 shared hosting/deployment contract tests passed**, including the incoming
+  audit-backend launcher contracts. These are offline Python/static/mock checks,
+  not live Linux/systemd deployment acceptance.
+- The PowerShell seed suite returned **PASS: offline seed configuration tests
+  (function-mocked CLI)**. Its mock writes do not touch Azure.
+- The existing external runtime JSON returned `CONFIGURATION_VALID`; validation
+  did not fetch tokens or call Azure. Dependency checks passed in the isolated
+  test environment. Editor, whitespace and documentation-link checks passed;
+  no conflict markers or implementation extension hooks remained.
+
+The active PoC venv did not contain the incoming `azure-storage-blob` dependency.
+For these tests, version **12.30.2** was installed only in a temporary dependency
+overlay and supplied through process-local `PYTHONPATH`. The live venv, runtime
+JSON, Azure resources/values and running UI/agent processes were not modified or
+restarted. The temporary overlay is not a substitute for deploying requirements.
+
+### User local acceptance
+
+Follow [the merged-checkout instructions](../../deployment/windows/README.md#test-an-updated-or-merged-checkout):
+stop both processes, install matching requirements into the existing PoC venv,
+validate the same runtime file and restart both with the Windows launcher.
+Do not rerun initializers merely to apply new sample personas/filters. Previously
+saved Azure values remain authoritative and should be edited only deliberately.
+
+T041 remains open for the user's real comparison, grouped Search load/save,
+refresh and citation checks. No live inference, Search retrieval, configuration
+write, Blob access, permission change or network operation was performed by
+this merge repair. Shared networking remains deferred.

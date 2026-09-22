@@ -119,3 +119,17 @@ replaced or marked complete by this reduced Windows milestone.
 - [X] T036 Finalize the existing-index configuration/filter runbook and final
   deployment diagnostics. Vector/hybrid/semantic implementation is outside this
   initial keyword-RAG milestone.
+
+## Follow-up — VM and healthcare merge repair (2026-09-22)
+
+- [X] T037 Restore configuration imports, conflict exceptions, comparison write
+  guards and mutation notices while preserving full-demo history behavior.
+- [X] T038 Reconcile Search normalization and mappings; preserve blank filters,
+  healthcare prompts and both grounding modes. Restore lost runtime coverage.
+- [X] T039 Integrate the shared Search form into the VM live editor with approved
+  indexes, ETags, blank-filter acknowledgment and honest partial-save outcomes.
+- [X] T040 Complete merged offline suites, shared deployment contracts, runtime
+  validation and handoff documentation without live Azure changes or restarts.
+- [ ] T041 User stops both processes, installs matching requirements in the
+  existing venv, restarts via the Windows launcher and verifies healthcare
+  comparisons and configuration editing locally. No automatic reseeding.

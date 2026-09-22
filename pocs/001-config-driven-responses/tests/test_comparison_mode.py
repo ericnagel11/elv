@@ -230,6 +230,17 @@ class ComparisonUITests(unittest.TestCase):
                 {"Generate side-by-side comparison", "Refresh configuration from Azure"},
             )
 
+    def test_vm_uses_the_healthcare_question_with_and_without_search(self):
+        os.environ.update({"ELV_ENABLE_RAG": "true", "ELV_SEARCH_ALLOWED_INDEXES": "medical-policies-vector"})
+        with patch("a2a_client.ConfiguredAgentClient") as client:
+            app = self.app().run()
+            message = next(field for field in app.text_area if field.label == "Member message")
+            self.assertEqual(message.value, "I received a denial notice for my health insurance claim. How can I appeal it?")
+            app.toggle(key="use_search_grounding").set_value(True).run()
+            self.assertFalse(app.exception)
+            self.assertEqual(next(field for field in app.text_area if field.label == "Member message").value, message.value)
+            client.assert_not_called()
+
     def test_empty_profiles_report_preparation_gap_without_model_call(self):
         with patch.object(cfg, "load_profile", return_value={}), \
                 patch("a2a_client.ConfiguredAgentClient") as client:
@@ -417,6 +428,10 @@ class ComparisonUITests(unittest.TestCase):
             updater.assert_not_called()
             next(field for field in app.text_area if field.label == "New value").set_value("")
             self.click(app, "Save to Azure")
+            updater.assert_not_called()
+            self.assertTrue(any("acknowledgement" in item.value for item in app.error))
+            next(field for field in app.checkbox if field.label.startswith("I acknowledge")).set_value(True)
+            self.click(app, "Save to Azure")
             self.assertFalse(app.exception)
             updater.assert_called_once_with(label="candidate", short_key="filter", value="", expected_etag="v1")
             self.assertIn("knowledge:filter", app.success[0].value)
@@ -436,6 +451,83 @@ class ComparisonUITests(unittest.TestCase):
             selector = next(field for field in app.selectbox if field.label == "New value")
             self.assertEqual(selector.options, ["medical-policies-vector"])
             updater.assert_not_called()
+
+    @staticmethod
+    def live_search_snapshot():
+        settings = {"enabled": "true", "index": "medical-policies-vector", "filter": "",
+                    "top_k": "3", "query_mode": "simple", "citation_style": "inline"}
+        return {"settings": settings, "etags": {key: f"version-{key}" for key in settings}}
+
+    def enable_knowledge_editor(self):
+        os.environ.update({
+            "ELV_ENABLE_RAG": "true", "ELV_SEARCH_ALLOWED_INDEXES": "medical-policies-vector",
+            "ELV_ENABLE_CONFIG_EDITING": "true",
+        })
+        app = self.app().run()
+        app.selectbox(key="live_config_area").select("Knowledge").run()
+        return app
+
+    def test_grouped_vm_search_form_loads_on_request_and_preserves_stored_blank_filter(self):
+        snapshot = self.live_search_snapshot()
+        with patch.object(cfg, "load_live_knowledge", return_value=snapshot) as loader, \
+                patch.object(cfg, "update_live_knowledge") as updater:
+            app = self.enable_knowledge_editor()
+            loader.assert_not_called()
+            self.click(app, "Load Search settings")
+            self.assertFalse(app.exception)
+            loader.assert_called_once_with("candidate")
+            self.assertEqual(next(field for field in app.text_area if field.label == "OData filter").value, "")
+            self.assertEqual(next(field for field in app.selectbox if field.label == "Query mode").options, ["simple"])
+            self.assertEqual(next(field for field in app.selectbox if field.label == "Search index or alias").options, ["medical-policies-vector"])
+            updater.assert_not_called()
+            self.click(app, "Save Search settings")
+            updater.assert_not_called()
+            self.assertTrue(any("acknowledgement" in item.value for item in app.error))
+            app.selectbox(key="live_config_profile").select("baseline").run()
+            self.assertNotIn("live_search_loaded", app.session_state)
+            self.assertFalse(any(button.label == "Save Search settings" for button in app.button))
+
+    def test_grouped_vm_search_save_uses_loaded_etags_and_clears_contexts(self):
+        snapshot = self.live_search_snapshot()
+        result = cfg.MutationResult(changed_keys=["knowledge:filter", "knowledge:top_k"])
+        with patch.object(cfg, "load_live_knowledge", return_value=snapshot), \
+                patch.object(cfg, "update_live_knowledge", return_value=result) as updater:
+            app = self.enable_knowledge_editor()
+            self.click(app, "Load Search settings")
+            next(field for field in app.text_area if field.label == "OData filter").set_value("State eq 'NY'")
+            next(field for field in app.number_input if field.label == "Top documents (top_k)").set_value(5)
+            app.session_state["a2a_baseline_context_id"] = "old-baseline"
+            app.session_state["a2a_candidate_context_id"] = "old-candidate"
+            app.session_state["results"] = {}
+            self.click(app, "Save Search settings")
+            self.assertFalse(app.exception)
+            updater.assert_called_once_with(
+                "candidate", {**snapshot["settings"], "filter": "State eq 'NY'", "top_k": "5"}, snapshot["etags"],
+            )
+            self.assertTrue(any("knowledge:filter" in item.value for item in app.success))
+            for key in ("results", "a2a_baseline_context_id", "a2a_candidate_context_id", "live_search_loaded"):
+                self.assertNotIn(key, app.session_state)
+
+    def test_grouped_vm_partial_save_shows_exact_outcome_without_retry(self):
+        snapshot = self.live_search_snapshot()
+        error = cfg.ConfigurationConflict("Search settings changed. Reload before saving.")
+        error.mutation_result = cfg.MutationResult(
+            changed_keys=["knowledge:filter"], failed_key="knowledge:top_k",
+            not_attempted=["knowledge:query_mode", "knowledge:citation_style"], outcome="partial",
+        )
+        with patch.object(cfg, "load_live_knowledge", return_value=snapshot), \
+                patch.object(cfg, "update_live_knowledge", side_effect=error) as updater:
+            app = self.enable_knowledge_editor()
+            self.click(app, "Load Search settings")
+            next(field for field in app.text_area if field.label == "OData filter").set_value("State eq 'NY'")
+            self.click(app, "Save Search settings")
+            self.assertFalse(app.exception)
+            self.assertTrue(any("Reload" in item.value for item in app.error))
+            self.assertTrue(any("knowledge:filter" in item.value for item in app.success))
+            self.assertTrue(any("Prior writes were not rolled back" in item.value for item in app.warning))
+            self.assertNotIn("live_search_loaded", app.session_state)
+            app.run()
+            self.assertEqual(updater.call_count, 1)
 
 
 class WindowsLauncherTests(unittest.TestCase):

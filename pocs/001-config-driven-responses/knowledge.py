@@ -98,39 +98,6 @@ def _field_value(item: dict, path: str):
         value = value.get(part)
     return value
 
-FIELD_DEFAULTS = {
-    "title": "title",
-    "content": "content",
-    "url": "url",
-    "industry": "industry",
-    "audience": "audience",
-    "status": "status",
-    "effective_date": "effective_date",
-    "state": "",
-    "source": "",
-}
-
-
-def field_mapping(settings: dict) -> dict:
-    mapping = {}
-    for name, default in FIELD_DEFAULTS.items():
-        value = str(settings.get(f"{name}_field", default)).strip()
-        if value and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(/[A-Za-z][A-Za-z0-9_]*)*", value):
-            raise ValueError(f"knowledge:{name}_field must be a Search field name or empty.")
-        if name in {"title", "content"} and not value:
-            raise ValueError(f"knowledge:{name}_field is required.")
-        mapping[name] = value
-    return mapping
-
-
-def _field_value(item: dict, path: str):
-    value = item
-    for part in path.split("/"):
-        if not isinstance(value, dict):
-            return None
-        value = value.get(part)
-    return value
-
 
 def endpoint() -> str:
     """Return the Search service URL from the process environment, or "" if unset.
@@ -182,27 +149,26 @@ def _client(index_name: str, persona) -> SearchClient:
 
 
 def settings_from_profile(profile: dict) -> dict:
-    """Merge the knowledge:* values already loaded from App Configuration over the
-    defaults, so a partially seeded store still behaves predictably."""
-    merged = dict(DEFAULTS)
-    for key, value in (profile or {}).items():
-        if value is not None and (str(value).strip() != "" or key.endswith("_field")):
-            merged[key] = str(value).strip()
-    return merged
     """Return retrieval settings for the UI, runtime and diagnostic script.
 
     Call after config.load_knowledge(), which has already fetched configuration
     and removed the key prefix: pass {"index": "kb-current"}, not
-    {"knowledge:index": "kb-current"}. Known values override a fresh six-key copy
-    of DEFAULTS and are normalized to stripped strings; profile is not modified.
+    {"knowledge:index": "kb-current"}. Normalize the six shared controls, then
+    retain explicit field mappings for existing indexes. Profile is not modified.
     An explicit blank filter means no filter; a missing/None filter uses the
-    approved-healthcare default. Other blank values use their defaults.
+    healthcare sample default. Blank optional mappings omit unavailable fields.
     No Azure request is made here. Pass the result to is_enabled() and search();
     individual helpers interpret values such as enabled and top_k later.
     Editors/publishers can use search_settings.validate_settings() for strict
     local validation, which does not validate OData or contact the service.
     """
-    return normalize_settings(profile)
+    settings = normalize_settings(profile)
+    mapping_keys = [f"{name}_field" for name in FIELD_DEFAULTS]
+    for key in [*mapping_keys, "search_fields", "semantic_configuration"]:
+        value = (profile or {}).get(key)
+        if value is not None:
+            settings[key] = str(value).strip()
+    return settings
 
 
 def is_enabled(settings: dict) -> bool:
@@ -231,7 +197,6 @@ def _top_k(settings: dict) -> int:
 
 
 def _run(client: SearchClient, question: str, settings: dict, semantic: bool):
-    mapping = field_mapping(settings)
     """Execute the read-only Azure AI Search request on behalf of search().
 
     client is the index/persona-specific SDK client; question becomes search_text.
@@ -244,7 +209,7 @@ def _run(client: SearchClient, question: str, settings: dict, semantic: bool):
     search()'s error-handling block. This helper does not catch those errors.
     SDK transport retries are separate from search()'s semantic fallback.
     """
-    # SELECT_FIELDS must exist and be retrievable on the configured index.
+    mapping = field_mapping(settings)
     kwargs = {
         "search_text": question,
         "top": _top_k(settings),
@@ -325,6 +290,14 @@ def search(question: str, settings: dict, persona=None) -> dict:
     except ClientAuthenticationError as exc:
         raise CredentialError("search", str(exc)) from exc
     except HttpResponseError as exc:
+        if exc.status_code == 400:
+            raise ValueError(
+                "Azure AI Search rejected the query (HTTP 400). Check knowledge:filter, "
+                "search fields and field mappings. Filter field names are case-sensitive "
+                "and must exist and be filterable in the selected index. Correct the "
+                "profile in Configuration > Knowledge, then save or refresh before retrying. "
+                "The configured filter was not removed."
+            ) from None
         if exc.status_code == 401:
             raise CredentialError("search", (exc.message or "").strip() or "Unauthorized") from exc
         if exc.status_code == 403:

@@ -69,7 +69,7 @@ class StreamlitStub:
                              min_value=min_value, max_value=max_value, step=step)
 
     def selectbox(self, label, options, *, index=0, key=None, disabled=False, help=None):
-        return self._control("selectbox", label, options[index], key, disabled,
+        return self._control("selectbox", label, options[index] if index is not None else None, key, disabled,
                              options=tuple(options), help=help)
 
     def checkbox(self, label, *, value=False, key=None, disabled=False):
@@ -314,6 +314,39 @@ class SearchFormTests(unittest.TestCase):
             f"{key}:search:{field}" for key in keys for field in (*DEFAULTS, "ack_no_filter")
         })
         self.assertEqual([button["form"] for button in st.submit_buttons], [f"{key}:search:form" for key in keys])
+
+
+    def test_vm_form_limits_index_and_modes_without_changing_stored_settings(self):
+        scope = {**DEFAULTS, "index": "medical-policies-vector", "filter": ""}
+        original = dict(scope)
+        st = StreamlitStub()
+        result = render_search_form(st, scope, editable=True, widget_key=IDENTITY,
+                                    index_options=("medical-policies-vector",), query_modes=("simple",))
+        self.assertIsNone(result)
+        self.assertEqual(st.controls[f"{PREFIX}:index"]["kind"], "selectbox")
+        self.assertEqual(st.controls[f"{PREFIX}:index"]["options"], ("medical-policies-vector",))
+        self.assertEqual(st.controls[f"{PREFIX}:query_mode"]["options"], ("simple",))
+        self.assertEqual(st.controls[f"{PREFIX}:filter"]["initial"], "")
+        self.assertEqual(scope, original)
+
+    def test_vm_form_rejects_submitted_index_or_mode_outside_operator_choices(self):
+        scope = {**DEFAULTS, "index": "medical-policies-vector"}
+        for key, value in (("index", "other-index"), ("query_mode", "semantic")):
+            st = StreamlitStub(values={f"{PREFIX}:{key}": value}, submitted=True)
+            result = render_search_form(st, scope, editable=True, widget_key=IDENTITY,
+                                        index_options=("medical-policies-vector",), query_modes=("simple",))
+            self.assertIsNone(result)
+            self.assertTrue(st.errors)
+
+    def test_vm_unapproved_stored_index_requires_explicit_selection(self):
+        scope = {**DEFAULTS, "index": "old-index", "query_mode": "semantic"}
+        st = StreamlitStub(submitted=True)
+        result = render_search_form(st, scope, editable=True, widget_key=IDENTITY,
+                                    index_options=("medical-policies-vector",), query_modes=("simple",))
+        self.assertIsNone(result)
+        self.assertIsNone(st.controls[f"{PREFIX}:index"]["initial"])
+        self.assertEqual(st.controls[f"{PREFIX}:query_mode"]["initial"], "simple")
+        self.assertTrue(any("query_mode" in warning for warning in st.warnings))
 
 
 class ResetResultsTests(unittest.TestCase):

@@ -44,10 +44,13 @@ def run_grounded(
 
     Keep result/found compatible with the UI. The additive grounded flag means
     references were actually retrieved, not just that grounding was requested.
-    Missing Search configuration uses v3's no-reference rules, not invented
-    plan facts or an assertion of successful grounding.
+    Full-demo previews retain v3's no-reference guidance. VM comparisons fail
+    closed when retrieval is disabled/unconfigured and skip inference on no hits.
     """
     scope = knowledge.settings_from_profile(scope)
+    rbac.require_grounding(scope["index"], persona)
+    if rbac.comparison_mode() and not knowledge.is_enabled(scope):
+        raise ValueError("knowledge:enabled must be true for the selected grounded profile.")
     if not knowledge.is_enabled(scope):
         return {
             "result": run_variant(experience_profile, question),
@@ -55,6 +58,8 @@ def run_grounded(
             "grounded": False,
         }
     if not knowledge.configured():
+        if rbac.comparison_mode():
+            raise ValueError("Configure the approved AZURE_SEARCH_ENDPOINT before requesting grounding.")
         found = {
             "documents": [],
             "notes": [
@@ -65,6 +70,16 @@ def run_grounded(
         }
     else:
         found = knowledge.search(question, scope, persona)
+    if rbac.comparison_mode() and not found["documents"]:
+        return {
+            "result": {
+                "text": "No matching source text was found in the configured knowledge scope. No model answer was generated.",
+                "messages": [], "latency_s": 0, "finish_reason": "no_sources",
+                "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0,
+            },
+            "found": found,
+            "grounded": False,
+        }
     inputs = {
         key: value
         for key, value in experience_profile.items()
