@@ -193,6 +193,45 @@ class ComparisonRagPolicyTests(unittest.TestCase):
 
     @patch("experience_runtime.generate_response")
     @patch("experience_runtime.knowledge.search")
+    def test_inline_mode_withholds_missing_or_invalid_markers_without_retry(self, search, generate):
+        search.return_value = {
+            "documents": [{"title": "Synthetic policy", "content": "Example reference.",
+                           "industry": "", "status": "Reviewed", "effective_date": ""}],
+            "notes": [], "index": "medical-policies-vector",
+        }
+        for text, status in (("Unsupported uncited advice.", "missing"),
+                             ("Unsupported source [2].", "invalid"),
+                             ("Mixed source numbers [1] and [0].", "invalid")):
+            with self.subTest(text=text):
+                generate.reset_mock()
+                generate.return_value = {"text": text, "finish_reason": "stop", "completion_tokens": 20}
+                bundle = run_grounded({"tone": "warm"}, EXISTING_INDEX_SETTINGS, "question", "app")
+                self.assertEqual(bundle["citation_status"], status)
+                self.assertEqual(bundle["result"]["finish_reason"], "citation_validation_failed")
+                self.assertNotIn(text, bundle["result"]["text"])
+                self.assertIn("answer was withheld", bundle["result"]["text"])
+                self.assertEqual(bundle["result"]["completion_tokens"], 20)
+                generate.assert_called_once()
+
+    @patch("experience_runtime.generate_response")
+    @patch("experience_runtime.knowledge.search")
+    def test_valid_inline_markers_and_none_mode_leave_model_text_unchanged(self, search, generate):
+        search.return_value = {
+            "documents": [{"title": "Synthetic policy", "content": "Example reference.",
+                           "industry": "", "status": "Reviewed", "effective_date": ""}],
+            "notes": [], "index": "medical-policies-vector",
+        }
+        for style, text, status in (("inline", "Example statement [1].", "present"),
+                                    ("none", "Example statement.", "not_requested")):
+            with self.subTest(style=style):
+                generate.return_value = {"text": text, "finish_reason": "stop"}
+                bundle = run_grounded({}, {**EXISTING_INDEX_SETTINGS, "citation_style": style}, "question", "app")
+                self.assertEqual(bundle["result"]["text"], text)
+                self.assertEqual(bundle["citation_status"], status)
+                self.assertEqual(generate.call_args.args[1]["citation_style"], style)
+
+    @patch("experience_runtime.generate_response")
+    @patch("experience_runtime.knowledge.search")
     def test_direct_vm_preview_never_uses_model_for_disabled_or_missing_search(self, search, generate):
         with self.assertRaisesRegex(ValueError, "knowledge:enabled"):
             run_grounded({}, {**EXISTING_INDEX_SETTINGS, "enabled": "false"}, "question", "app")

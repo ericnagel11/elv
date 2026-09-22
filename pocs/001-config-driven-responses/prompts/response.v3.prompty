@@ -57,6 +57,8 @@ Safety and grounding rules, which take priority over persona and experience guid
 - Do not request protected health information (PHI), member IDs, claim numbers, diagnoses, or copies of medical records or denial notices in this chat. Direct account-specific help and document submission to the plan's official secure channels.
 {% if citation_style == 'inline' %}
 - Cite the numbered source in square brackets, for example [1], immediately after each statement drawn from it.
+- Every factual statement based on a reference needs its source marker, including bullet points. Use only the source numbers present below; for multiple sources use separate markers such as [1][2].
+- Do not replace reference-based answers with uncited general guidance when references are irrelevant. State that the references do not answer the question rather than inventing support or citation numbers.
 {% elif citation_style == 'footnote' %}
 - Do not cite inline. End the reply with a "Sources" line listing the numbered sources you used.
 {% else %}

@@ -228,3 +228,81 @@ install matching requirements into the PoC venv, then restart via the Windows
 launcher. The grouped-save adapter reuses existing contracts because the full
 demo's draft writer is deliberately unavailable in comparison mode; no new
 framework or Azure service is required.
+
+## Follow-up: filter diagnostics and citation visibility (2026-09-22)
+
+The user reported an A2A failure after editing a filter. Existing agent logs
+showed Search HTTP 400 for `industry`, then lowercase `status`, neither matching
+the configured existing index. Preserve the filter and selected index; surface
+a sanitized query rejection through the existing A2A validation path and
+distinguish a failed task from a transport outage. Remove the incompatible
+sample filter hint from the VM form without changing the full-demo defaults.
+
+The user then supplied a completed grounded task and configuration screenshots
+showing an inline setting but no markers in the answer. Inspect the existing
+task by local A2A GET with `A2A-Version: 1.0`; do not repeat model requests merely
+to reproduce it. Add pinned citation style and check status to safe A2A provenance
+and identify the source table as retrieved material, not proof of citations.
+
+Retain healthcare grounding instructions. Check nonempty inline-mode output for
+numeric source markers and valid source numbers. Withhold missing/invalidly cited
+model text, without assigning unsupported citations or automatic inference
+retries. The check does not establish sentence-level support, factual accuracy
+or source relevance; document that limit. None/footnote and empty-model handling
+remain separate. Validate with offline runtime, protocol and UI tests, then
+restart only the known local PoC processes; no cloud configuration/index writes.
+
+## Follow-up: VM configuration history in Blob Storage (2026-09-22)
+
+The user asked to enable storage-backed configuration history in the current
+single-identity VM workflow. They approved the existing storage account and
+dedicated `poc001-config-history` container, reported that the container still
+needs creating, explicitly permitted reuse of the runtime identity for history
+writes/reads, and chose implementation/offline checks only. No live Storage test,
+container creation, permission change or configuration mutation is authorized
+for this implementation step.
+
+Reuse change_history.py, its create-only JSON writes, bounded reads and safe CSV
+export. Add an explicit default-off `ELV_ENABLE_CONFIG_HISTORY` in runtime JSON,
+validate the Blob target locally, and clear inherited settings to prevent implicit
+activation. Comparison-mode reader/writer use the validated runtime identity
+only when enabled; full-governance separate identities and disabled Log Analytics
+access in comparison mode remain unchanged.
+
+Record the actual live write helper's known before/after values, ETags and result.
+Preserve configuration errors and unknown timeout outcomes; never retry/rollback
+configuration because history failed. Skip no-ops. Grouped saves share an operation
+ID and aggregate history warnings without masking partial config writes. Expand
+the history allowlist for VM field mappings without widening the full-demo editor.
+Reuse the existing history view in a separately gated Change history tab, with no
+reads on entry, and show history warnings for single-key saves across reruns.
+
+Stage the approved account/container with the flag false until administrator
+preparation. Document private container creation, container-scoped permissions,
+shared-identity limitations, activation and user-performed acceptance. Tests use
+mocked clients/transport only and cover opt-in, original values, races, failures,
+no-op behavior, grouping and warning/read UX. No new framework, Azure account,
+logging platform or credential mechanism is introduced.
+
+## Follow-up: explicit history-container setup script (2026-09-22)
+
+The user requested a script to create the dedicated private container and set
+the existing local history configuration accordingly. Retain the earlier
+implementation-only boundary: author/test the script and run its local preview,
+but do not apply it against Azure or create an event on the user's behalf.
+
+Reuse Windows runtime validation and the installed Blob/Identity SDKs. Default
+to a no-network, no-file-change preview. Explicit `--apply --approved-azure-host`
+selects the existing VM identity, gets only the named container's properties,
+creates it privately if absent, and confirms privacy before enabling the local
+flag. A racing create is rechecked. Existing public containers are rejected,
+not converted. There is no account provisioning, role assignment, key/SAS path,
+Blob content operation, service restart or configuration-store mutation.
+
+Replace only the local history flag semantically, preserving other parsed JSON
+values and the destination Windows DACL. Detect runtime-file edits made during
+setup; document the need to pause other writers because this is not a distributed
+transaction or file compare-and-swap. A container can remain if later steps fail;
+do not delete it or overwrite configuration to manufacture rollback. Tests must
+cover preview, approval, creation/reuse/races/privacy, permission failures,
+idempotence and local preservation, with Storage mocked throughout.

@@ -75,6 +75,11 @@ COMPARISON_KNOWLEDGE_KEYS = EDITABLE_KNOWLEDGE_KEYS + [
     "status_field", "effective_date_field", "state_field", "source_field", "search_fields",
 ]
 
+FULL_DEMO_KEYS = frozenset(
+    [EXPERIENCE_PREFIX + key for key in EDITABLE_KEYS]
+    + [KNOWLEDGE_PREFIX + key for key in EDITABLE_KNOWLEDGE_KEYS]
+)
+
 
 def validate_knowledge_value(short_key: str, value: str) -> None:
     if short_key not in COMPARISON_KNOWLEDGE_KEYS:
@@ -147,6 +152,8 @@ def _record(persona, **event) -> list[str]:
 
 
 def _failure(exc, write_issued=False) -> tuple[str, str]:
+    if isinstance(exc, ConfigurationConflict):
+        return "conflict", "conflict"
     if isinstance(exc, CredentialError):
         return "failed", "authentication"
     if isinstance(exc, AccessDenied):
@@ -265,11 +272,13 @@ def update_experience_setting(label: str, short_key: str, value: str, expected_e
     return _update_live_setting(label, short_key, value, expected_etag, EXPERIENCE_PREFIX)
 
 
-def update_knowledge_setting(label: str, short_key: str, value: str, expected_etag: str) -> dict:
+def update_knowledge_setting(label: str, short_key: str, value: str, expected_etag: str,
+                             *, operation_id=None) -> dict:
     """Update only approved retrieval settings; the Search index itself is unchanged."""
     _require_editable_setting(label, short_key, KNOWLEDGE_PREFIX)
     validate_knowledge_value(short_key, value)
-    return _update_live_setting(label, short_key, value, expected_etag, KNOWLEDGE_PREFIX)
+    return _update_live_setting(label, short_key, value, expected_etag, KNOWLEDGE_PREFIX,
+                                operation_id=operation_id)
 
 
 def load_live_knowledge(label: str) -> dict:
@@ -306,42 +315,86 @@ def update_live_knowledge(label: str, settings: dict, expected_etags: dict) -> M
             result.unchanged_keys.append(full_key)
             continue
         try:
-            update_knowledge_setting(label, key, values[key], expected_etags[key])
+            saved = update_knowledge_setting(
+                label, key, values[key], expected_etags[key], operation_id=result.operation_id
+            )
         except Exception as exc:
             outcome = "conflict" if isinstance(exc, ConfigurationConflict) else _failure(exc, write_issued=True)[0]
+            item = getattr(exc, "mutation_result", None)
+            if item is not None:
+                outcome = item.outcome
+                result.audit_warnings.extend(item.audit_warnings)
             result.outcome = "partial" if result.changed_keys else outcome
             result.failed_key = full_key
             result.not_attempted = [f"{KNOWLEDGE_PREFIX}{name}" for name in EDITABLE_KNOWLEDGE_KEYS[position + 1:]]
             exc.mutation_result = result
             raise
         result.changed_keys.append(full_key)
+        result.audit_warnings.extend(saved.get("audit_warnings", []))
     result.outcome = "success" if result.changed_keys else "unchanged"
     return result
 
 
-def _update_live_setting(label: str, short_key: str, value: str, expected_etag: str, prefix: str) -> dict:
+def _update_live_setting(label: str, short_key: str, value: str, expected_etag: str, prefix: str,
+                         *, operation_id=None) -> dict:
     if not isinstance(expected_etag, str) or not expected_etag.strip() or expected_etag == "*":
         raise ValueError("Load the current setting version before saving.")
-
-    def _update():
+    history_enabled = rbac.config_history_enabled()
+    result = MutationResult(operation_id=operation_id or str(uuid4()))
+    key = f"{prefix}{short_key}"
+    previous_value = previous_etag = None
+    old_known = False
+    write_issued = False
+    try:
         client = _client("production", "app")
         try:
-            current = client.get_configuration_setting(
-                key=f"{prefix}{short_key}", label=label
+            current = _guard(
+                f"read the live {label} {short_key} setting", "production",
+                lambda: client.get_configuration_setting(key=key, label=label),
             )
-            if current.etag != expected_etag:
-                raise ConfigurationConflict("This setting changed. Reload it before saving again.")
-            if current.value == value:
-                return {"value": current.value, "etag": current.etag}
-            current.value = value
-            saved = client.set_configuration_setting(
-                current, etag=expected_etag, match_condition=MatchConditions.IfNotModified
+        except ResourceNotFoundError:
+            old_known = True
+            raise ConfigurationConflict("This setting was removed. Reload it before saving again.") from None
+        old_known = True
+        previous_value, previous_etag = current.value, current.etag
+        if current.etag != expected_etag:
+            raise ConfigurationConflict("This setting changed. Reload it before saving again.")
+        if current.value == value:
+            return {"value": current.value, "etag": current.etag}
+        current.value = value
+        write_issued = True
+        try:
+            saved = _guard(
+                f"update the live {label} {short_key} setting", "production",
+                lambda: client.set_configuration_setting(
+                    current, etag=expected_etag, match_condition=MatchConditions.IfNotModified
+                ),
             )
         except (ResourceModifiedError, ResourceNotFoundError):
             raise ConfigurationConflict("This setting changed or was removed. Reload it before saving again.") from None
-        return {"value": saved.value, "etag": saved.etag}
+    except Exception as exc:
+        result.outcome, category = _failure(exc, write_issued)
+        result.failed_key = key
+        if history_enabled:
+            result.audit_warnings.extend(_record(
+                "app", operation_id=result.operation_id, operation="save", store="production",
+                label=label, key=key, old_value=previous_value, new_value=value,
+                old_value_known=old_known, old_etag=previous_etag, new_etag=None,
+                outcome=result.outcome, error_category=category,
+            ))
+        exc.mutation_result = result
+        raise
 
-    return _guard(f"update the live {label} {short_key} setting", "production", _update)
+    response = {"value": saved.value, "etag": saved.etag}
+    if history_enabled:
+        result.audit_warnings.extend(_record(
+            "app", operation_id=result.operation_id, operation="save", store="production",
+            label=label, key=key, old_value=previous_value, new_value=saved.value,
+            old_value_known=True, old_etag=previous_etag, new_etag=saved.etag,
+            outcome="success", error_category=None,
+        ))
+        response.update(operation_id=result.operation_id, audit_warnings=result.audit_warnings)
+    return response
 
 
 def set_value(short_key: str, value: str, store: str = "draft",
@@ -359,7 +412,7 @@ def set_value(short_key: str, value: str, store: str = "draft",
     """
     rbac.require_full_demo("Configuration editing")
     key = f"{prefix}{short_key}"
-    if key not in change_history.CONFIG_KEYS or store not in STORE_ENV or label not in PROFILE_LABELS:
+    if key not in FULL_DEMO_KEYS or store not in STORE_ENV or label not in PROFILE_LABELS:
         raise ValueError("Only the approved configuration keys, stores and profile labels are editable.")
     if not isinstance(value, str) or len(value) > change_history.MAX_VALUE_CHARS:
         raise ValueError("Configuration value must be text of at most 8192 characters.")
@@ -491,14 +544,14 @@ def publish_draft(persona=None) -> MutationResult:
         values = {}
         for prefix in (EXPERIENCE_PREFIX, KNOWLEDGE_PREFIX):
             draft = load_profile(DRAFT_LABEL, store="draft", persona=persona, prefix=prefix)
-            if any(prefix + key not in change_history.CONFIG_KEYS for key in draft):
+            if any(prefix + key not in FULL_DEMO_KEYS for key in draft):
                 raise ValueError("Draft contains unsupported settings; review before publication.")
             if prefix == KNOWLEDGE_PREFIX and draft:
                 normalized = validate_settings(draft)
                 draft = {key: normalized[key] for key in draft}
             for key, value in draft.items():
                 full_key = prefix + key
-                if full_key not in change_history.CONFIG_KEYS:
+                if full_key not in FULL_DEMO_KEYS:
                     raise ValueError("Draft contains unsupported settings; review before publication.")
                 if not isinstance(value, str) or len(value) > change_history.MAX_VALUE_CHARS:
                     raise ValueError("Draft contains an invalid or oversized value.")

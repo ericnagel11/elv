@@ -87,6 +87,13 @@ def config_editing_enabled() -> bool:
     return comparison_mode() and enabled == "true"
 
 
+def config_history_enabled() -> bool:
+    enabled = os.environ.get("ELV_ENABLE_CONFIG_HISTORY", "false")
+    if enabled not in {"true", "false"}:
+        raise ValueError("ELV_ENABLE_CONFIG_HISTORY must be true or false.")
+    return comparison_mode() and enabled == "true"
+
+
 def rag_enabled() -> bool:
     enabled = os.environ.get("ELV_ENABLE_RAG", "false")
     if enabled not in {"true", "false"}:
@@ -172,7 +179,7 @@ def service_credential(service: str):
     if service not in {"runtime", "audit"}:
         raise ValueError("Unknown service identity.")
     if comparison_mode():
-        if service != "runtime":
+        if service == "audit" and not config_history_enabled():
             raise OperationDisabled("Audit is disabled in comparison mode.")
         return credential_for("app")
     if hosting.vm_mode():
@@ -244,8 +251,14 @@ def audit_writer_credential():
     An existing approved UAMI may be selected explicitly, but it must not be
     the audit reader or any configured application persona. This validation
     belongs inside the best-effort history boundary, not application startup.
+    Comparison history explicitly reuses the approved runtime identity when
+    opted in; it does not claim an independent audit writer or reader.
     Construction does not request a token or establish Azure role assignments.
     """
+    if comparison_mode():
+        if not config_history_enabled():
+            raise OperationDisabled("Configuration history is disabled in comparison mode.")
+        return credential_for("app")
     from azure.identity import ManagedIdentityCredential
 
     if not hosting.vm_mode():

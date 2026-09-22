@@ -29,7 +29,8 @@ remains required; local mocked tests do not establish live Blob permissions.
 full-governance setup below. It keeps the existing single managed identity,
 App Configuration/OpenAI/Search resources, external runtime JSON and localhost
 listeners. Healthcare prompts and the grouped RAG form work in that mode too;
-separate draft identities and Blob history are not enabled on this VM.
+separate draft identities are not enabled. Optional VM Blob history is implemented
+behind an explicit opt-in, currently disabled until its private container exists.
 
 ## What changes without a code release
 
@@ -82,7 +83,8 @@ agent on localhost with one explicit managed identity, external nonsecret JSON
 settings and no client-secret/developer fallback. The App Configuration store
 must contain both synthetic comparison profiles before responses can be generated.
 
-This mode disables persona switching, publishing, permission probes and audit.
+This mode disables persona switching, publishing, permission probes and the full
+governance audit workflow.
 Search is off unless `ELV_ENABLE_RAG` is explicitly enabled with an approved
 endpoint/index allowlist. Configuration writes remain off unless the Windows runtime JSON explicitly
 sets `ELV_ENABLE_CONFIG_EDITING` to `"true"`. That option adds a **Configuration**
@@ -97,6 +99,15 @@ Approved-index and keyword-only restrictions remain, blank filters need
 acknowledgment, and field mappings can still be edited individually. Version
 checks and partial-result reporting prevent misleading claims of atomic saves.
 Existing Azure settings are not migrated by new industry defaults.
+
+Optional [VM configuration history](../../deployment/windows/README.md#configuration-change-history-in-blob-storage)
+uses `ELV_ENABLE_CONFIG_HISTORY` and a dedicated private Blob container. The user
+approved reusing the runtime managed identity for this limited mode's writes and
+reads; the full demo's distinct-identity policy below remains unchanged. History
+is best-effort configuration before/after evidence, not prompts/responses or
+per-user attribution. Storage failures remain separate from the save outcome.
+The target is staged but disabled until administrator preparation and a user-run
+live test are complete; the app never creates the container or grants roles.
 
 Optional [existing-index RAG](../../deployment/windows/README.md#ground-responses-with-an-existing-search-index)
 maps `Content`, `Title`, `Status`, `State` and source metadata through

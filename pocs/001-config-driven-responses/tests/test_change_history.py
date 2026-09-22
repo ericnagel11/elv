@@ -218,6 +218,18 @@ class StorageTests(OfflineTests):
                 self.assertIs(self.payload()["old_value_known"], known)
                 self.assertEqual(self.payload()["old_value"], value)
 
+    def test_field_mapping_changes_are_allowlisted_history_not_full_demo_edit_permission(self):
+        import config
+
+        event = input_event(key="knowledge:content_field", old_value="content", new_value="Content")
+        self.assertEqual(history.record_event(event), [])
+        self.assertEqual(self.payload()["key"], "knowledge:content_field")
+        self.assertNotIn("knowledge:content_field", config.FULL_DEMO_KEYS)
+        with patch.object(config, "_client") as client:
+            with self.assertRaises(ValueError):
+                config.set_value("content_field", "Content", persona="designer", prefix="knowledge:")
+            client.assert_not_called()
+
     def test_only_approved_keys_and_bounded_typed_fields_are_recorded(self):
         cases = (
             {"key": "application:secret"}, {"key": "knowledge:unsupported"},
@@ -228,7 +240,7 @@ class StorageTests(OfflineTests):
             {"operation": RAW_ERROR}, {"outcome": RAW_ERROR},
             {"store": "https://arbitrary"}, {"old_etag": "a" * 257},
             {"label": "a" * 129}, {"succeeded_keys": ["client_secret"]},
-            {"not_attempted": ["knowledge:top_k"] * 13}, {"failed_key": "secret"},
+            {"not_attempted": ["knowledge:top_k"] * (len(history.CONFIG_KEYS) + 1)}, {"failed_key": "secret"},
         )
         for changes in cases:
             with self.subTest(changes=changes):
@@ -687,6 +699,59 @@ class RealSdkTests(OfflineTests):
             normalized = {key.lower(): value for key, value in headers.items()}
             self.assertEqual(normalized["if-none-match"], "*")
             self.assertEqual(normalized["x-ms-blob-type"], "BlockBlob")
+
+
+class ComparisonHistoryIdentityTests(OfflineTests):
+    def setUp(self):
+        super().setUp()
+        os.environ.update({
+            "ELV_HOSTING_MODE": "azure-vm", "ELV_DEMO_MODE": "comparison",
+            "ELV_MI_APP_CLIENT_ID": ACTOR_ID,
+        })
+
+    def test_history_is_off_by_default_without_credential_or_storage_calls(self):
+        with patch.object(history, "ContainerClient") as container, \
+                patch.object(rbac, "ManagedIdentityCredential") as credential:
+            self.assertFalse(rbac.config_history_enabled())
+            self.assertEqual(history.record_event(input_event()), [])
+            with self.assertRaises(history.HistoryUnavailable):
+                history.load_events(START, END)
+            with self.assertRaises(rbac.OperationDisabled):
+                rbac.audit_writer_credential()
+            with self.assertRaises(rbac.OperationDisabled):
+                rbac.service_credential("audit")
+            credential.assert_not_called()
+            container.assert_not_called()
+
+    def test_explicit_opt_in_uses_only_runtime_identity_for_writer_and_reader(self):
+        os.environ["ELV_ENABLE_CONFIG_HISTORY"] = "true"
+        with patch.object(rbac, "ManagedIdentityCredential") as credential, \
+                patch.object(rbac, "DefaultAzureCredential", side_effect=AssertionError("fallback")), \
+                patch.object(rbac, "ClientSecretCredential", side_effect=AssertionError("secret")):
+            self.assertTrue(rbac.config_history_enabled())
+            self.assertIs(rbac.audit_writer_credential(), credential.return_value)
+            self.assertIs(rbac.service_credential("audit"), credential.return_value)
+            self.assertEqual(credential.call_count, 2)
+            credential.assert_called_with(client_id=ACTOR_ID)
+            self.roles.assert_not_called()
+
+    def test_invalid_flag_or_runtime_id_fails_before_credentials(self):
+        with patch.object(rbac, "ManagedIdentityCredential") as credential:
+            os.environ["ELV_ENABLE_CONFIG_HISTORY"] = "yes"
+            with self.assertRaisesRegex(ValueError, "ELV_ENABLE_CONFIG_HISTORY"):
+                rbac.audit_writer_credential()
+            os.environ["ELV_ENABLE_CONFIG_HISTORY"] = "true"
+            os.environ["ELV_MI_APP_CLIENT_ID"] = ""
+            with self.assertRaisesRegex(ValueError, "ELV_MI_APP_CLIENT_ID"):
+                rbac.service_credential("audit")
+            credential.assert_not_called()
+
+    def test_history_opt_in_does_not_enable_other_personas_or_full_governance(self):
+        os.environ["ELV_ENABLE_CONFIG_HISTORY"] = "true"
+        with self.assertRaises(rbac.OperationDisabled):
+            rbac.credential_for("approver")
+        with self.assertRaises(rbac.OperationDisabled):
+            rbac.require_full_demo("Publishing")
 
 
 if __name__ == "__main__":

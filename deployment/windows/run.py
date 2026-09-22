@@ -21,6 +21,7 @@ REQUIRED_SETTINGS = frozenset({
 ALLOWED_SETTINGS = REQUIRED_SETTINGS | {
     "ELV_OPENAI_REQUEST_PROFILE", "ELV_ENABLE_CONFIG_EDITING", "ELV_ENABLE_RAG",
     "AZURE_SEARCH_ENDPOINT", "ELV_SEARCH_ALLOWED_INDEXES",
+    "ELV_ENABLE_CONFIG_HISTORY", "ELV_AUDIT_BLOB_ACCOUNT_URL", "ELV_AUDIT_BLOB_CONTAINER",
 }
 FORCED_SETTINGS = {
     "ELV_HOSTING_MODE": "azure-vm",
@@ -99,6 +100,19 @@ def validate_settings(settings: dict) -> None:
         raise ValueError("This launcher requires ELV_OPENAI_REQUEST_PROFILE=gpt4o.")
     if settings.get("ELV_ENABLE_CONFIG_EDITING", "false") not in {"true", "false"}:
         raise ValueError("ELV_ENABLE_CONFIG_EDITING must be true or false.")
+    if settings.get("ELV_ENABLE_CONFIG_HISTORY", "false") not in {"true", "false"}:
+        raise ValueError("ELV_ENABLE_CONFIG_HISTORY must be true or false.")
+    history_enabled = settings.get("ELV_ENABLE_CONFIG_HISTORY") == "true"
+    blob_account = settings.get("ELV_AUDIT_BLOB_ACCOUNT_URL", "")
+    blob_container = settings.get("ELV_AUDIT_BLOB_CONTAINER", "")
+    if (history_enabled or "ELV_AUDIT_BLOB_ACCOUNT_URL" in settings) and not re.fullmatch(
+        r"https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/?", blob_account
+    ):
+        raise ValueError("ELV_AUDIT_BLOB_ACCOUNT_URL must be a standard HTTPS Blob endpoint without credentials or a path.")
+    if (history_enabled or "ELV_AUDIT_BLOB_CONTAINER" in settings) and not re.fullmatch(
+        r"(?=.{3,63}\Z)[a-z0-9]+(?:-[a-z0-9]+)*", blob_container
+    ):
+        raise ValueError("ELV_AUDIT_BLOB_CONTAINER must name the approved private history container.")
     state = Path(settings["ELV_STATE_DIRECTORY"])
     if (not state.is_absolute() or state.resolve().is_relative_to(ROOT)
             or not state.is_dir() or not os.access(state, os.W_OK)):
@@ -117,6 +131,10 @@ def process_environment(settings: dict) -> dict:
     environment["ELV_ENABLE_RAG"] = settings.get("ELV_ENABLE_RAG", "false")
     environment["AZURE_SEARCH_ENDPOINT"] = settings.get("AZURE_SEARCH_ENDPOINT", "")
     environment["ELV_SEARCH_ALLOWED_INDEXES"] = settings.get("ELV_SEARCH_ALLOWED_INDEXES", "")
+    environment["ELV_ENABLE_CONFIG_HISTORY"] = settings.get("ELV_ENABLE_CONFIG_HISTORY", "false")
+    environment["ELV_AUDIT_BACKEND"] = "blob"
+    environment["ELV_AUDIT_BLOB_ACCOUNT_URL"] = settings.get("ELV_AUDIT_BLOB_ACCOUNT_URL", "")
+    environment["ELV_AUDIT_BLOB_CONTAINER"] = settings.get("ELV_AUDIT_BLOB_CONTAINER", "")
     bypasses = []
     for key in ("NO_PROXY", "no_proxy"):
         bypasses.extend(value.strip() for value in environment.get(key, "").split(",") if value.strip())
@@ -160,6 +178,7 @@ def main(argv=None) -> int:
     rbac.comparison_mode()
     rbac.runtime_identity_id()
     rbac.config_editing_enabled()
+    rbac.config_history_enabled()
     if rbac.rag_enabled():
         rbac.approved_search_indexes()
     if args.validate_only:

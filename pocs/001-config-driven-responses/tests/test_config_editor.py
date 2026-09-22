@@ -329,6 +329,15 @@ class SearchFormTests(unittest.TestCase):
         self.assertEqual(st.controls[f"{PREFIX}:filter"]["initial"], "")
         self.assertEqual(scope, original)
 
+    def test_vm_form_does_not_advertise_sample_schema_filter(self):
+        scope = {**DEFAULTS, "index": "medical-policies-vector", "filter": "Status ne 'Revised'"}
+        st = StreamlitStub()
+        render_search_form(st, scope, editable=True, widget_key=IDENTITY,
+                           index_options=("medical-policies-vector",), query_modes=("simple",))
+        self.assertEqual(st.controls[f"{PREFIX}:filter"]["initial"], "Status ne 'Revised'")
+        self.assertFalse(any(DEFAULTS["filter"] in caption for caption in st.captions))
+        self.assertTrue(any("case-sensitive" in caption for caption in st.captions))
+
     def test_vm_form_rejects_submitted_index_or_mode_outside_operator_choices(self):
         scope = {**DEFAULTS, "index": "medical-policies-vector"}
         for key, value in (("index", "other-index"), ("query_mode", "semantic")):

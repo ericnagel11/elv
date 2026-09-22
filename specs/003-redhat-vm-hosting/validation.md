@@ -371,3 +371,140 @@ T041 remains open for the user's real comparison, grouped Search load/save,
 refresh and citation checks. No live inference, Search retrieval, configuration
 write, Blob access, permission change or network operation was performed by
 this merge repair. Shared networking remains deferred.
+
+## Search diagnostics and inline citations — 2026-09-22
+
+The user reported an A2A task failure after saving a filter. Existing agent logs
+identified Search HTTP 400: the earlier filter referenced missing `industry`,
+then missing lowercase `status`. The selected index uses `Status`/`State`.
+The user's later screenshot showed the corrected `Status ne 'Revised'` value.
+No filter was removed, rewritten or saved by this investigation.
+
+The user also supplied configuration/provenance screenshots with inline citation
+style, grounded prompt asset `response:v3`, and three retrieved-source rows but
+no inline markers in the answer. A read of that already-completed local task
+confirmed a nonempty response without `[n]` markers. The first task GET lacked
+the A2A version header and returned 400; the corrected GET with `A2A-Version: 1.0`
+returned the existing artifact. No new task or model request was sent. The old
+artifact did not report pinned citation style, so the current settings alone
+could not establish which style that prior context had applied.
+
+Implemented safe HTTP 400 configuration guidance and an A2A task-error type so
+this failure is no longer presented as a disconnected agent. The VM form no
+longer shows the sample index's incompatible filter as an example/default.
+The requested filter remains intact and is never broadened to recover a query.
+
+Inline-mode answers now require at least one numeric source marker and no
+out-of-range marker numbers. Nonempty model output failing that check is withheld
+with `citation_validation_failed`, not assigned fabricated references or retried.
+Applied `citation_style` and `citation_status` travel with the A2A task, and the
+UI labels the table **Retrieved sources**. This checks format and source numbers,
+not claim support, source relevance, marker placement for every statement or
+medical correctness. Footnote-style compliance is not claimed as validated.
+
+**242 PoC tests and 22 shared hosting/deployment tests passed** offline, including
+Search-error propagation with no filter removal/model call, uncited-output
+withholding, valid marker preservation, none-mode behavior and A2A/UI provenance.
+`pip check` and changed-file editor diagnostics passed. No real Azure values,
+permissions, indexes, document content or deployment settings were changed;
+no additional inference was run. Live behavior after local restart remains a
+user acceptance check, not a claimed new successful cited response.
+
+Both known local PoC processes were subsequently restarted through the unchanged
+Windows launcher/runtime JSON. Agent and UI health returned `ok`, UI root returned
+HTTP 200, and ports 9999/8501 remained bound only to 127.0.0.1. This activates the
+new behavior for future tasks; restarting clears in-memory contexts and does not
+retroactively cite the earlier response. No new inference was made after restart.
+
+## VM configuration history implementation — 2026-09-22
+
+The user approved connecting local configuration edits to the existing Blob
+history recorder, reusing the VM runtime managed identity for both writes and
+reads. The selected target is the existing `tenxengbenefitaistandard` account
+and a dedicated private `poc001-config-history` container. The user reported that
+the container needs creating and selected **implementation only**, with the live
+test to be performed by the user. No container, role or network change was made.
+
+### Implemented scope
+
+- Added the explicit default-off `ELV_ENABLE_CONFIG_HISTORY` runtime option.
+  Comparison history uses only the configured runtime client ID; full-demo
+  separate writer/reader validation remains intact. The Windows launcher
+  validates nonsecret targets locally and prevents inherited settings from
+  silently enabling history or switching it to Log Analytics.
+- Version-checked live saves record known before/after values and ETags, bounded
+  key/profile identity, operation ID and actual result through the existing
+  create-only recorder. No-op saves do not write events. Grouped Search writes
+  share an operation ID and preserve history warnings alongside partial outcomes.
+- Configuration failures keep their original type and outcome. A write timeout
+  remains unknown. Blob failures cannot retry, roll back or hide a confirmed
+  configuration change. Both successful single-key saves and failures surface
+  their separate history warnings in the UI.
+- Added history support for the VM's field-mapping keys without broadening the
+  full-demo edit allowlist. No model questions, responses, document excerpts,
+  tokens or raw provider errors are added to events. No historical backfill.
+- The optional Change history tab uses the existing bounded reader/export code.
+  It performs no read until Refresh is selected and reports outages as unavailable,
+  not empty successful history. It explicitly identifies the shared VM identity;
+  this is not authenticated human attribution or tamper-proof storage.
+
+### Completed offline and local checks
+
+- **261 PoC001 tests and 22 shared hosting/deployment tests passed**. New checks
+  cover default-off behavior, explicit shared identity selection, staged/invalid
+  settings, before/after preservation, no-ops, conflicts, read/write timeouts,
+  history failure isolation, grouped IDs, history reads and save warning display.
+- Storage clients/transports and Azure configuration writes were mocked. No live
+  Blob list, upload, download, synthetic event, App Configuration change, Search
+  query or model request was made for this implementation.
+- `pip check`, editor diagnostics and documentation link/whitespace validation
+  passed. The external runtime JSON was staged with the approved account/container
+  and `ELV_ENABLE_CONFIG_HISTORY=false`; validate-only passed without token requests.
+- Only the local UI was restarted with history disabled; the existing agent
+  stayed running. Both health endpoints returned `ok`, the UI root returned
+  HTTP 200, and listeners remained loopback-only on ports 8501 and 9999.
+
+### Pending activation
+
+T048 remains open. An authorized owner must create/confirm the private container
+and effective read/create access for the existing VM identity. The user can then
+set the flag to `"true"`, restart the UI, make an intentional non-sensitive
+configuration edit, and verify its event through Change history or the container.
+The exact [activation steps](../../deployment/windows/README.md#configuration-change-history-in-blob-storage)
+are documented. Container existence, Blob permissions/network access, retention
+and actual live history persistence have **not** been verified by this work.
+
+## History container setup script — 2026-09-22
+
+Added the requested [prepare_history.py](../../deployment/windows/prepare_history.py)
+operator script. It uses the existing external runtime JSON and explicit VM
+managed identity. The default is a local-only preview; applying requires both
+`--apply` and `--approved-azure-host` on Windows with the PoC venv interpreter.
+
+The apply path creates only the named container when it is missing, with no
+anonymous access, then verifies its properties. Existing private containers are
+preserved; public containers are rejected without access-policy changes. Only
+after verification is `ELV_ENABLE_CONFIG_HISTORY` set to `"true"` in local JSON,
+preserving all other values through a Windows replacement operation. Concurrent
+edits detected during setup stop the update. This does not claim an atomic
+cross-service transaction or compare-and-swap against simultaneous local writers.
+
+**273 PoC001 tests plus 22 shared hosting/deployment tests passed.** The 12 new
+script tests cover preview/approval, missing targets, create-only privacy,
+private reuse/idempotence, create races, public targets, permission/verification
+failures, credential rejection, concurrent edits and local replacement failure.
+Azure identity/Storage operations were mocked. Local replacement was exercised
+on temporary Windows files, not on the active runtime file.
+
+The actual no-apply preview displayed the staged account/container and intended
+flag. SHA-256 before/after checks confirmed the real runtime JSON was unchanged;
+the history flag remained `"false"`. `pip check`, editor diagnostics, links and
+whitespace checks passed. No new packages, process restart, Azure request,
+container, blob, role, network setting or model request was made in this step.
+
+T049-T050 are complete; T048 remains pending the authorized user apply and live
+history test. Creating/reading container properties does not prove future event
+upload/list/download permission. A created container can remain if a later local
+update fails; the script does not roll back or delete it. The
+[scripted activation instructions](../../deployment/windows/README.md#scripted-container-setup-and-local-activation)
+include permission prerequisites, restart steps and failure handling.

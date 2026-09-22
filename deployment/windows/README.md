@@ -17,6 +17,12 @@ The full-demo draft/persona/Blob-history implementation is retained separately;
 it does not require provisioning those resources for this single-identity VM.
 No stored Azure value is migrated by a code update.
 
+**Optional configuration history, 2026-09-22:** the user approved reusing this
+VM's runtime identity for Blob history writes and reads. The implementation is
+ready, but `ELV_ENABLE_CONFIG_HISTORY` is staged as `"false"` because the private
+history container still needs creating. No live Storage test was requested or
+performed. See [the activation steps](#configuration-change-history-in-blob-storage).
+
 The [launcher](run.py) starts either the Streamlit UI or its internal A2A agent.
 It does not install packages, request tokens during validation, change Azure,
 seed configuration, configure services, change firewalls or expose public ports.
@@ -34,8 +40,9 @@ dependency installation and offline tests must pass on the actual target host.
   explicit `ELV_ENABLE_CONFIG_EDITING=true` option adds a bounded live editor
   for existing baseline/candidate settings. `ELV_ENABLE_RAG=true` separately
   enables approved-index retrieval and knowledge configuration. Both options are
-  off by default. Persona switching, publishing, permission probes, draft reads,
-  audit and unrestricted writes remain disabled. These are local application
+  off by default. Configuration history has its own default-off opt-in and does
+  not enable Log Analytics or persona auditing. Persona switching, publishing,
+  permission probes, draft reads and unrestricted writes remain disabled. These are local application
   restrictions, **not Azure RBAC denials**.
 - This does not reduce the existing identity's Azure permissions. All trusted
   VM users/code can potentially use attached identities. Separate Windows
@@ -64,6 +71,7 @@ Confirm effective access at these resources:
 | Approved PoC App Configuration store | App Configuration Data Reader for comparisons; Data Owner for live editing |
 | Approved Azure OpenAI account | Cognitive Services OpenAI User |
 | Approved Search index, when RAG is enabled | Search Index Data Reader, or existing sufficient data-query permission |
+| Dedicated private history container, when history is enabled | Storage Blob Data Contributor on that container; includes required reads |
 
 Existing Data Owner access already includes configuration reads; do not add
 redundant roles, broaden permissions or revoke shared assignments automatically.
@@ -361,7 +369,7 @@ changes the selected profile in the production store.
 
 All trusted VM users share this configuration and identity; it is not per-user
 Azure authorization. Generic writes, new keys, deletion, other labels/prefixes,
-Search index/document writes, audit and draft publishing are not exposed by this
+Search index/document writes, persona auditing and draft publishing are not exposed by this
 editor. No Azure values are automatically changed by enabling or starting it.
 
 ### Grouped Search controls on the VM
@@ -389,6 +397,168 @@ Reload after a failure; other browser sessions must refresh their own contexts.
 Blank `knowledge:filter` remains blank at query time; it is never replaced by the
 healthcare sample's lowercase `industry`/`status` filter. Healthcare defaults apply
 only to absent settings and do not rename this VM's existing index fields.
+
+### Configuration change history in Blob Storage
+
+**Implemented but disabled pending preparation.** This records application
+configuration changes, not general logs, prompts, responses, RAG documents or
+feedback. Ordinary error logs still go to the local terminals and feedback to
+the existing local CSV. The approved target is the existing account
+`https://tenxengbenefitaistandard.blob.core.windows.net`, private container
+`poc001-config-history`. The user reports that the container needs creating and
+will perform the live acceptance test themselves.
+
+The explicit comparison-mode option reuses `ELV_MI_APP_CLIENT_ID` for both writer
+and reader. This is the user's approved limited-PoC choice, **not independent
+audit identities, per-person attribution or immutable history**. The full demo's
+separate writer/reader requirements are unchanged. Do not configure client secrets,
+SAS, account keys, new personas or a Log Analytics workspace for this option.
+
+#### Administrator preparation
+
+1. In **Azure Portal > Storage accounts > tenxengbenefitaistandard > Data storage >
+   Containers**, have an authorized operator create **poc001-config-history**
+   with anonymous access **Private (no anonymous access)**. If that name already
+   exists, confirm its owner, purpose and contents instead of replacing it.
+   Keep it separate from customer documents and Search indexer containers.
+2. At that container's **Access control (IAM)**, confirm the VM's existing
+   user-assigned identity has effective **Storage Blob Data Contributor** or
+   equivalent read/create permissions. Its client ID is
+   `c5224757-9cf0-4d8d-9ae3-e72ce1112447`; use the corresponding managed identity
+   resource/principal for role assignment, not the operator's Windows identity.
+   Existing sufficient access needs no redundant Reader grant. If a new grant
+   is needed, request it at this container's scope, not the storage account or
+   subscription. Local Windows administrator rights do not grant Azure RBAC rights.
+3. Confirm the approved VM-to-Blob private DNS/HTTPS/CA/proxy route and agree
+   retention ownership. Do not enable public access, disable TLS verification,
+   change firewalls or reconfigure the account merely to make a test pass.
+   Container creation and role/network changes are not performed by the app.
+
+#### Scripted container setup and local activation
+
+The separate [prepare_history.py](prepare_history.py) script performs the
+approved container setup and local flag update. It reads the staged target and
+runtime managed-identity client ID from the existing external JSON; no duplicate
+account/container arguments or credentials are required. It is **never called
+by application startup**.
+
+From the repository root on the VM, preview first:
+
+```powershell
+& .\pocs\001-config-driven-responses\.venv\Scripts\python.exe .\deployment\windows\prepare_history.py --config C:\ProgramData\elv\poc001\runtime.json
+```
+
+The preview makes no credential request, Azure call or local change. Confirm the
+printed account/container is the approved history target, then explicitly apply:
+
+```powershell
+& .\pocs\001-config-driven-responses\.venv\Scripts\python.exe .\deployment\windows\prepare_history.py --config C:\ProgramData\elv\poc001\runtime.json --apply --approved-azure-host
+```
+
+Apply uses only the configured managed identity. If the named container is
+missing, it creates it with **no anonymous public access**, then reads its
+properties to confirm it is private. An existing private container is reused
+without changing its policy, metadata or contents. If it is public, verification
+fails: the script does not change its access policy. Concurrent creation is
+handled by checking the resulting container rather than replacing it.
+
+Only after that check does the script set `ELV_ENABLE_CONFIG_HISTORY` to `"true"`
+in the same runtime JSON. All other configuration values are preserved. The
+Windows file-replacement operation preserves the original file's access-control
+list; it does not loosen directory/file permissions. An already enabled file is
+left untouched. The script checks for file changes made during the Azure operation
+and refuses to overwrite them. Pause other editors while applying: this byte
+check is not an atomic compare-and-swap against concurrent file replacements.
+
+The identity must already have the required container read/create permissions.
+Creating a container can require provisioning permission beyond a grant intended
+only for blobs inside an existing container. On 403, have the authorized owner
+confirm/create the target or arrange the necessary scoped permission; the script
+does **not** grant roles, fetch account keys, use the operator's CLI session or
+fall back to another credential. Do not broaden access automatically to make it
+pass. Normal history operation should retain container-scoped rights.
+
+Successful output is `CONTAINER_CREATED_PRIVATE` or `CONTAINER_ALREADY_PRIVATE`,
+followed by `HISTORY_ENABLED` or `HISTORY_ALREADY_ENABLED`. Restart the UI using
+section 5 to load the change; the script does not terminate or restart processes.
+It does not upload a test event, list/download blobs, seed App Configuration,
+change accounts/networks/roles, or touch Search. Private means anonymous Blob
+access is disabled, not proof of Private Link routing or appropriate RBAC scope.
+
+This is not a transaction across Azure and the local file. A created container
+can remain after a later verification/file error. There is no deletion or
+rollback. Azure failure leaves the previous local flag untouched; a local file
+error requires inspection of runtime JSON before restarting. After correcting
+the reported issue, preview and rerun: existing private containers and enabled
+settings are preserved. Property verification does not prove future event upload,
+list or download permission; complete the separate live history test below.
+
+The script has been tested offline and previewed locally only. It has not yet
+been applied against this storage account; the staged flag remains `"false"`.
+
+#### Enable and verify locally
+
+The following fields are already staged in the protected external runtime JSON,
+with history disabled. The script above sets the flag after preparing the private
+container. For manual preparation instead, change only the flag to `"true"` after
+the container/access checks; retain all existing endpoint, model, identity and RAG fields:
+
+```json
+{
+  "ELV_ENABLE_CONFIG_HISTORY": "true",
+  "ELV_AUDIT_BLOB_ACCOUNT_URL": "https://tenxengbenefitaistandard.blob.core.windows.net",
+  "ELV_AUDIT_BLOB_CONTAINER": "poc001-config-history"
+}
+```
+
+The Windows launcher requires valid nonsecret Blob target settings when enabled,
+forces the Blob backend for this option, and clears inherited history target/flag
+values that are absent from runtime JSON. It does not accept a separate history
+writer/reader selector in comparison mode. `--validate-only` checks local settings
+without requesting a token, checking the container or writing an event.
+
+Restart the UI with the existing Windows launcher after changing these history
+settings, then reload the local page. The inference agent need not restart for a
+history-only change. The **Change history** tab appears only while enabled.
+Opening the tab or starting the app does not list/upload events; **Refresh change
+history** explicitly performs a bounded read. A read failure is shown as
+unavailable, never as successful empty history.
+
+For your live test, make one intentional, non-sensitive setting change through
+**Configuration**, select **Save to Azure** or **Save Search settings**, then open
+**Change history > Refresh change history**. Verify the key, profile, before/after
+values and result. A changed key is stored as a unique JSON block blob under a
+UTC-date prefix, using `overwrite=False`. A no-op save creates no event. Reverting
+the value later is a second deliberate change and should produce its own event.
+No synthetic test event has been uploaded automatically.
+
+#### Recorded scope and failure behavior
+
+- Live experience edits, knowledge controls and field-mapping edits use the
+  existing recorder. Events contain UTC time, operation ID, profile/key, known
+  before/after values and ETags, outcome and the configured runtime client ID.
+  All changed keys in one grouped Search save share an operation ID.
+- Write-path conflicts, denials and failures are recorded best-effort. A timeout
+  after issuing a write is **unknown**, not a confirmed failure or success.
+  Local input/policy validation and grouped preflight checks can fail before
+  entering this recording path; this is not a complete feed of all attempts.
+- History failures never roll back, retry or turn a confirmed App Configuration
+  change into a failed save. The UI reports both the real configuration outcome
+  and a separate history warning. Grouped saves remain non-atomic and stop on
+  a configuration failure; already-recorded/changed keys are not deleted.
+- No backfill of earlier edits, Portal/CLI/initializer changes, prompts, answers,
+  document excerpts, tokens or raw provider errors. Configuration values **are**
+  stored, so do not put secrets, personal data or PHI in them. CSV downloads are
+  derived from the displayed bounded history and should be protected as evidence.
+- Blob outages/crashes may leave gaps. Storage Blob Data Contributor can overwrite
+  or delete content even though this application only creates events. The shared
+  VM identity is usable by trusted local code/users, so this is not tamper-proof
+  or an authenticated human audit trail. Retention remains an owner decision.
+
+To pause history, set `ELV_ENABLE_CONFIG_HISTORY` to `"false"` and restart the UI.
+This hides the history tab and prevents history SDK calls while leaving existing
+blobs and ordinary configuration editing intact. It does not delete the container
+or revoke any shared identity permission.
 
 ### Ground responses with an existing Search index
 
@@ -494,6 +664,35 @@ citations. Retrieved excerpts and rendered prompts stay inside the agent rather
 than being included as raw A2A artifacts. Source citations show retrieved
 evidence; they do not independently certify the model's factual accuracy.
 
+#### Inline citations and retrieved sources
+
+`knowledge:citation_style=inline` instructs the grounded `response:v3` prompt to
+place source markers such as `[1]` immediately after source-based claims. The
+**Retrieved sources** table lists the chunks returned by Search; it is not a
+list of statements that the model successfully cited. An irrelevant retrieval
+can have three rows without supporting an answer to the member's question.
+
+The runtime checks nonempty inline-mode answers for at least one `[n]` marker
+and verifies that all such marker numbers correspond to returned sources.
+If markers are missing or out of range, it withholds the model text and returns
+a visible warning (`finish_reason=citation_validation_failed`). It does not
+append invented citations or automatically retry/bill another model request.
+Empty model/content-filter responses retain their own outcome handling.
+
+The **A2A task provenance** section records the pinned `citation_style` and
+`citation_status` (`present`, `missing`, `invalid`, `no_sources`, `not_requested`,
+or `not_checked`). These fields describe the response that was generated, not
+the latest settings currently shown in the editor. Older tasks may not have
+these fields. After changing settings externally, refresh configuration and
+generate in a new context; old responses are not retroactively reformatted.
+
+This is a syntax/source-number check only. `present` does not verify citation
+placement after every claim, passage relevance, factual support, or medical
+correctness. Footnote-style compliance is not validated by this inline check.
+Review source relevance rather than forcing a numbered reference onto unsupported
+general advice. None mode intentionally requests no markers; ungrounded v1/v2
+responses also have no retrieved references to cite.
+
 #### Filter examples using existing metadata
 
 Bounded facet inspection returned `Status` values `Reviewed`, `Revised`, and
@@ -508,8 +707,15 @@ and loading its current value:
 ```text
 State eq 'NY'
 Status eq 'Reviewed'
+Status ne 'Revised'
 State eq 'CA' and (Status eq 'Reviewed' or Status eq 'Revised')
 ```
+
+`Status ne 'Revised'` excludes that value; `Status eq 'Revised'` includes only
+that value. Field names are case-sensitive: lowercase `status` is not `Status`,
+and the sample index's `industry` field is not present in this index. The VM
+editor does not advertise that incompatible sample expression as a default.
+It does not rewrite field names or drop invalid filters for the operator.
 
 These are examples, not automatically applied rules. `Reviewed` does not mean
 the application has independently verified content approval. A blank filter is
@@ -547,6 +753,10 @@ dependencies, not recreation of shared Azure resources.
   runtime JSON, restart only the UI, and reload the browser page.
 - Save conflict: another editor changed or removed the setting. Load its latest
   value and review before saving; do not bypass the ETag check or reinitialize.
+- History warning: the configuration outcome shown is independent of the Blob
+  result. Confirm the container exists, the shared identity's container-scoped
+  permissions and private connectivity; do not retry the configuration change
+  merely to try logging again. A missing container is not created automatically.
 - 401/authentication: verify Client ID, VM attachment and tenant placement.
 - 403: verify actual identity/role scope and network policy separately. Do not
   add broad roles merely to suppress a failure.
@@ -562,10 +772,15 @@ dependencies, not recreation of shared Azure resources.
   components. Do not enable it solely through inherited environment variables.
 - Search 400: check exact field casing, retrievability/searchability, filter
   syntax and `query_mode=simple`. Do not delete the filter or switch indexes as
-  a silent fallback. The initial field capability checks were read-only.
+  a silent fallback. A rejected Search query is reported through A2A as a task
+  error with safe configuration guidance, not an unavailable agent. Raw provider
+  diagnostics and submitted filter literals are not echoed by that message.
 - No source text: verify the selected profile's knowledge mappings and filter.
   No model is called for an empty retrieval in comparison mode. Do not infer
   that the whole index is empty just from one question/filter.
+- Inline answer withheld: inspect the actual task's citation style/status and
+  source relevance. The runtime will not fabricate markers or silently retry.
+  A source table alone does not establish that the text was supported or cited.
 
 ## 7. Shared private HTTPS: administrator handoff
 

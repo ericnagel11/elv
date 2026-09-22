@@ -250,6 +250,83 @@ class ComparisonUITests(unittest.TestCase):
             self.assertIn("baseline and candidate profiles", app.error[0].value)
             client.assert_not_called()
 
+    def test_task_rejection_is_not_reported_as_an_unavailable_agent(self):
+        from a2a_client import A2ATaskError
+
+        with patch.object(cfg, "load_profile", return_value={"tone": "warm"}), \
+                patch("a2a_client.ConfiguredAgentClient") as client:
+            client.return_value.invoke.side_effect = A2ATaskError("Azure AI Search rejected the query (HTTP 400).")
+            app = self.app().run()
+            self.click(app, "Generate side-by-side comparison")
+            self.assertFalse(app.exception)
+            self.assertIn("HTTP 400", app.error[0].value)
+            self.assertNotIn("unavailable", app.error[0].value)
+            self.assertFalse(any("Start the agent" in item.value for item in app.caption))
+            self.assertEqual(client.return_value.invoke.call_count, 1)
+
+    def test_history_tab_requires_opt_in_and_refresh_before_storage_read(self):
+        with patch.object(cfg.change_history, "load_events", return_value=cfg.change_history.HistoryPage()) as loader:
+            app = self.app().run()
+            self.assertFalse(any(tab.label == "Change history" for tab in app.tabs))
+            loader.assert_not_called()
+            os.environ["ELV_ENABLE_CONFIG_HISTORY"] = "true"
+            app = self.app().run()
+            self.assertFalse(app.exception)
+            self.assertEqual([tab.label for tab in app.tabs], ["Experience comparison", "Change history"])
+            loader.assert_not_called()
+            self.click(app, "Refresh change history")
+            self.assertFalse(app.exception)
+            loader.assert_called_once()
+            self.assertTrue(any("Shared VM runtime identity" in item.value for item in app.caption))
+            self.assertTrue(any("No recorded events match" in item.value for item in app.info))
+
+    def test_history_outage_is_not_displayed_as_empty_history(self):
+        os.environ["ELV_ENABLE_CONFIG_HISTORY"] = "true"
+        with patch.object(cfg.change_history, "load_events", side_effect=cfg.change_history.HistoryUnavailable("History unavailable.")) as loader:
+            app = self.app().run()
+            self.click(app, "Refresh change history")
+            self.assertFalse(app.exception)
+            self.assertTrue(any("History unavailable" in item.value for item in app.error))
+            self.assertFalse(any("No recorded events match" in item.value for item in app.info))
+            self.assertNotIn("history_page", app.session_state)
+            loader.assert_called_once()
+
+    def test_successful_single_save_preserves_blob_warning_across_rerun(self):
+        os.environ.update({"ELV_ENABLE_CONFIG_HISTORY": "true", "ELV_ENABLE_CONFIG_EDITING": "true"})
+        warning = "Change history was not recorded; the configuration outcome is unchanged."
+        with patch.object(cfg, "load_editable_setting", return_value={"value": "neutral", "etag": "v1"}), \
+                patch.object(cfg, "update_experience_setting", return_value={
+                    "value": "warm", "etag": "v2", "audit_warnings": [warning],
+                }) as updater, patch.object(cfg.change_history, "load_events") as reader:
+            app = self.app().run()
+            self.click(app, "Load current value")
+            next(field for field in app.text_area if field.label == "New value").set_value("warm")
+            self.click(app, "Save to Azure")
+            self.assertFalse(app.exception)
+            self.assertTrue(any("Saved to Azure" in item.value for item in app.success))
+            self.assertIn(warning, [item.value for item in app.warning])
+            self.assertFalse(app.error)
+            updater.assert_called_once()
+            reader.assert_not_called()
+
+    def test_failed_single_save_shows_history_warning_without_reporting_success(self):
+        os.environ.update({"ELV_ENABLE_CONFIG_HISTORY": "true", "ELV_ENABLE_CONFIG_EDITING": "true"})
+        failure = cfg.ConfigurationConflict("Reload the changed setting.")
+        failure.mutation_result = cfg.MutationResult(outcome="conflict", audit_warnings=["History unavailable."])
+        with patch.object(cfg, "load_editable_setting", return_value={"value": "neutral", "etag": "v1"}), \
+                patch.object(cfg, "update_experience_setting", side_effect=failure) as updater, \
+                patch.object(cfg.change_history, "load_events") as reader:
+            app = self.app().run()
+            self.click(app, "Load current value")
+            next(field for field in app.text_area if field.label == "New value").set_value("warm")
+            self.click(app, "Save to Azure")
+            self.assertFalse(app.exception)
+            self.assertFalse(app.success)
+            self.assertIn("History unavailable.", [item.value for item in app.warning])
+            self.assertTrue(any("Reload" in item.value for item in app.warning))
+            updater.assert_called_once()
+            reader.assert_not_called()
+
     def test_comparison_results_feedback_and_refresh(self):
         def response(message, profile_slot, context_id=None):
             return {
@@ -406,7 +483,7 @@ class ComparisonUITests(unittest.TestCase):
             self.click(app, "Generate side-by-side comparison")
             self.assertFalse(app.exception)
             self.assertEqual(client.return_value.invoke.call_count, 2)
-            self.assertEqual(sum(expander.label == "Sources (1)" for expander in app.expander), 2)
+            self.assertEqual(sum(expander.label == "Retrieved sources (1)" for expander in app.expander), 2)
             self.assertEqual(app.session_state["results"]["candidate"]["citations"][0]["state"], "NY")
             app.toggle(key="use_search_grounding").set_value(False).run()
             self.assertNotIn("results", app.session_state)
@@ -550,6 +627,53 @@ class WindowsLauncherTests(unittest.TestCase):
         path = self.directory / "runtime.json"
         path.write_text(json.dumps(self.settings), encoding="utf-8-sig")
         self.assertEqual(self.launcher.load_settings(path), self.settings)
+
+    def test_history_requires_explicit_json_opt_in_and_uses_only_blob_backend(self):
+        inherited = {
+            "ELV_ENABLE_CONFIG_HISTORY": "true", "ELV_AUDIT_BACKEND": "loganalytics",
+            "ELV_AUDIT_BLOB_ACCOUNT_URL": "https://other.blob.core.windows.net",
+            "ELV_AUDIT_BLOB_CONTAINER": "other-container",
+        }
+        with patch.dict(os.environ, inherited, clear=True):
+            environment = self.launcher.process_environment(self.settings)
+            self.assertEqual(environment["ELV_ENABLE_CONFIG_HISTORY"], "false")
+            self.assertEqual(environment["ELV_AUDIT_BACKEND"], "blob")
+            self.assertEqual(environment["ELV_AUDIT_BLOB_ACCOUNT_URL"], "")
+            self.assertEqual(environment["ELV_AUDIT_BLOB_CONTAINER"], "")
+            configured = {**self.settings, "ELV_ENABLE_CONFIG_HISTORY": "true",
+                          "ELV_AUDIT_BLOB_ACCOUNT_URL": "https://historyaccount.blob.core.windows.net",
+                          "ELV_AUDIT_BLOB_CONTAINER": "poc001-config-history"}
+            environment = self.launcher.process_environment(configured)
+            self.assertEqual(environment["ELV_ENABLE_CONFIG_HISTORY"], "true")
+            self.assertEqual(environment["ELV_AUDIT_BLOB_ACCOUNT_URL"], configured["ELV_AUDIT_BLOB_ACCOUNT_URL"])
+            self.assertEqual(environment["ELV_MI_APP_CLIENT_ID"], RUNTIME_ID)
+
+    def test_history_configuration_rejects_missing_or_credential_bearing_targets(self):
+        configured = {**self.settings, "ELV_ENABLE_CONFIG_HISTORY": "true",
+                      "ELV_AUDIT_BLOB_ACCOUNT_URL": "https://historyaccount.blob.core.windows.net",
+                      "ELV_AUDIT_BLOB_CONTAINER": "poc001-config-history"}
+        for key in ("ELV_AUDIT_BLOB_ACCOUNT_URL", "ELV_AUDIT_BLOB_CONTAINER"):
+            with self.subTest(missing=key), self.assertRaisesRegex(ValueError, key):
+                self.launcher.validate_settings({name: value for name, value in configured.items() if name != key})
+        invalid = (
+            ("ELV_ENABLE_CONFIG_HISTORY", "yes"), ("ELV_ENABLE_CONFIG_HISTORY", True),
+            ("ELV_AUDIT_BLOB_ACCOUNT_URL", "http://historyaccount.blob.core.windows.net"),
+            ("ELV_AUDIT_BLOB_ACCOUNT_URL", "https://historyaccount.blob.core.windows.net?sig=PRIVATE"),
+            ("ELV_AUDIT_BLOB_ACCOUNT_URL", "https://user:PRIVATE@historyaccount.blob.core.windows.net"),
+            ("ELV_AUDIT_BLOB_ACCOUNT_URL", "https://historyaccount.blob.core.windows.net/container"),
+            ("ELV_AUDIT_BLOB_CONTAINER", "$root"), ("ELV_AUDIT_BLOB_CONTAINER", "other/container"),
+            ("ELV_AUDIT_BLOB_CONTAINER", "ab"), ("ELV_AUDIT_BLOB_CONTAINER", "UPPERCASE"),
+        )
+        for key, value in invalid:
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError) as caught:
+                self.launcher.validate_settings({**configured, key: value})
+            self.assertNotIn("PRIVATE", str(caught.exception))
+
+    def test_history_target_can_be_staged_disabled_without_cloud_validation(self):
+        configured = {**self.settings, "ELV_ENABLE_CONFIG_HISTORY": "false",
+                      "ELV_AUDIT_BLOB_ACCOUNT_URL": "https://historyaccount.blob.core.windows.net",
+                      "ELV_AUDIT_BLOB_CONTAINER": "poc001-config-history"}
+        self.launcher.validate_settings(configured)
 
     def test_editing_requires_explicit_runtime_json_opt_in(self):
         with patch.dict(os.environ, {"ELV_ENABLE_CONFIG_EDITING": "true"}, clear=True):
@@ -974,6 +1098,294 @@ class LiveConfigurationEditTests(unittest.TestCase):
         self.client.set_configuration_setting.side_effect = error
         with self.assertRaises(cfg.AccessDenied):
             cfg.update_experience_setting("candidate", "tone", "warm", "version-1")
+
+
+class LiveConfigurationHistoryTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.dict(os.environ, {
+            **COMPARISON_ENV, "ELV_ENABLE_CONFIG_EDITING": "true", "ELV_ENABLE_CONFIG_HISTORY": "true",
+            "ELV_ENABLE_RAG": "true", "ELV_SEARCH_ALLOWED_INDEXES": "medical-policies-vector",
+        }, clear=True))
+        self.factory = self.enterContext(patch.object(cfg, "_client"))
+        self.client = self.factory.return_value
+        self.current = cfg.ConfigurationSetting(
+            key="experience:tone", label="candidate", value="neutral", etag="before",
+            tags={"owner": "demo"}, content_type="text/plain",
+        )
+        self.client.get_configuration_setting.return_value = self.current
+        self.client.set_configuration_setting.return_value = cfg.ConfigurationSetting(
+            key=self.current.key, label="candidate", value="warm", etag="after",
+        )
+        self.recorder = self.enterContext(patch.object(cfg.change_history, "record_event", return_value=[]))
+
+    def event(self):
+        return self.recorder.call_args.args[0]
+
+    def test_success_records_before_after_and_runtime_actor_after_one_write(self):
+        result = cfg.update_experience_setting("candidate", "tone", "warm", "before")
+        event = self.event()
+        self.assertEqual(result["value"], "warm")
+        self.assertEqual(result["audit_warnings"], [])
+        self.assertEqual(result["operation_id"], event["operation_id"])
+        self.assertEqual((event["old_value"], event["new_value"]), ("neutral", "warm"))
+        self.assertEqual((event["old_etag"], event["new_etag"]), ("before", "after"))
+        self.assertEqual((event["store"], event["label"], event["key"]), ("production", "candidate", "experience:tone"))
+        self.assertEqual(event["actor_persona"], "app")
+        self.assertEqual(event["actor_client_id"], RUNTIME_ID)
+        self.assertEqual(event["outcome"], "success")
+        self.recorder.assert_called_once()
+        self.client.set_configuration_setting.assert_called_once()
+        self.assertEqual(self.current.tags, {"owner": "demo"})
+
+    def test_history_warning_or_exception_does_not_repeat_or_fail_confirmed_save(self):
+        for failure in (["Storage unavailable; configuration saved."], RuntimeError("private transport detail")):
+            with self.subTest(failure=type(failure).__name__):
+                self.current.value = "neutral"
+                self.client.set_configuration_setting.reset_mock()
+                self.recorder.reset_mock()
+                self.recorder.side_effect = failure if isinstance(failure, Exception) else None
+                self.recorder.return_value = failure if isinstance(failure, list) else []
+                result = cfg.update_experience_setting("candidate", "tone", "warm", "before")
+                self.assertEqual(result["value"], "warm")
+                self.assertTrue(result["audit_warnings"])
+                self.assertNotIn("private transport detail", str(result))
+                self.client.set_configuration_setting.assert_called_once()
+                self.recorder.assert_called_once()
+
+    def test_disabled_history_or_unchanged_value_never_records(self):
+        cfg.update_experience_setting("candidate", "tone", "neutral", "before")
+        self.recorder.assert_not_called()
+        self.client.set_configuration_setting.assert_not_called()
+        os.environ["ELV_ENABLE_CONFIG_HISTORY"] = "false"
+        self.assertEqual(cfg.update_experience_setting("candidate", "tone", "warm", "before"), {
+            "value": "warm", "etag": "after",
+        })
+        self.recorder.assert_not_called()
+
+    def test_stale_setting_records_conflict_without_writing(self):
+        with self.assertRaises(cfg.ConfigurationConflict) as caught:
+            cfg.update_experience_setting("candidate", "tone", "warm", "stale")
+        self.assertEqual(caught.exception.mutation_result.outcome, "conflict")
+        self.assertEqual(self.event()["outcome"], "conflict")
+        self.assertEqual(self.event()["old_value"], "neutral")
+        self.client.set_configuration_setting.assert_not_called()
+
+    def test_failed_read_and_write_timeout_have_distinct_outcomes(self):
+        self.client.get_configuration_setting.side_effect = cfg.ServiceRequestError("private details")
+        with self.assertRaises(cfg.ServiceRequestError):
+            cfg.update_experience_setting("candidate", "tone", "warm", "before")
+        self.assertEqual(self.event()["outcome"], "failed")
+        self.assertFalse(self.event()["old_value_known"])
+        self.client.set_configuration_setting.assert_not_called()
+        self.client.get_configuration_setting.side_effect = None
+        self.client.set_configuration_setting.side_effect = cfg.ServiceResponseError("private details")
+        with self.assertRaises(cfg.ServiceResponseError) as caught:
+            cfg.update_experience_setting("candidate", "tone", "warm", "before")
+        self.assertEqual(caught.exception.mutation_result.outcome, "unknown")
+        self.assertEqual(self.event()["outcome"], "unknown")
+        self.assertTrue(self.event()["old_value_known"])
+        self.assertNotIn("private details", str(self.event()))
+        self.client.set_configuration_setting.assert_called_once()
+
+    def test_denial_remains_denial_when_history_is_unavailable(self):
+        error = cfg.HttpResponseError("private response")
+        error.status_code = 403
+        self.client.set_configuration_setting.side_effect = error
+        self.recorder.return_value = ["History unavailable."]
+        with self.assertRaises(cfg.AccessDenied) as caught:
+            cfg.update_experience_setting("candidate", "tone", "warm", "before")
+        self.assertEqual(self.event()["outcome"], "denied")
+        self.assertEqual(caught.exception.mutation_result.audit_warnings, ["History unavailable."])
+
+    def test_grouped_search_changes_share_operation_id_and_preserve_warnings(self):
+        values = {"enabled": "true", "index": "medical-policies-vector", "filter": "",
+                  "top_k": "3", "query_mode": "simple", "citation_style": "inline"}
+        versions = {key: f"v-{key}" for key in values}
+        stored = {
+            f"knowledge:{key}": cfg.ConfigurationSetting(key=f"knowledge:{key}", label="candidate", value=value, etag=versions[key])
+            for key, value in values.items()
+        }
+        self.client.get_configuration_setting.side_effect = lambda *, key, label: stored[key]
+        self.client.set_configuration_setting.side_effect = lambda setting, **kwargs: setting
+        self.recorder.return_value = ["History unavailable."]
+        result = cfg.update_live_knowledge("candidate", {**values, "filter": "State eq 'NY'", "top_k": "5"}, versions)
+        events = [call.args[0] for call in self.recorder.call_args_list]
+        self.assertEqual(len(events), 2)
+        self.assertEqual({event["operation_id"] for event in events}, {result.operation_id})
+        self.assertEqual({event["key"] for event in events}, {"knowledge:filter", "knowledge:top_k"})
+        self.assertEqual(result.changed_keys, ["knowledge:filter", "knowledge:top_k"])
+        self.assertTrue(result.audit_warnings)
+        self.assertEqual(result.outcome, "success")
+
+
+class HistoryPreparationTests(unittest.TestCase):
+    def setUp(self):
+        directory = Path(__file__).resolve().parents[3] / "deployment" / "windows"
+        launcher_spec = importlib.util.spec_from_file_location("run", directory / "run.py")
+        launcher = importlib.util.module_from_spec(launcher_spec)
+        launcher_spec.loader.exec_module(launcher)
+        spec = importlib.util.spec_from_file_location("history_setup", directory / "prepare_history.py")
+        self.setup = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"run": launcher}):
+            spec.loader.exec_module(self.setup)
+        self.directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.path = self.directory / "runtime.json"
+        self.settings = {
+            "AZURE_APPCONFIG_ENDPOINT": "https://example.azconfig.io",
+            "AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com/",
+            "AZURE_OPENAI_DEPLOYMENT": "existing-deployment",
+            "AZURE_OPENAI_API_VERSION": "2024-10-21",
+            "ELV_MI_APP_CLIENT_ID": RUNTIME_ID,
+            "ELV_STATE_DIRECTORY": str(self.directory),
+            "ELV_ENABLE_CONFIG_EDITING": "true",
+            "ELV_ENABLE_RAG": "true",
+            "AZURE_SEARCH_ENDPOINT": "https://example.search.windows.net",
+            "ELV_SEARCH_ALLOWED_INDEXES": "medical-policies-vector",
+            "ELV_ENABLE_CONFIG_HISTORY": "false",
+            "ELV_AUDIT_BLOB_ACCOUNT_URL": "https://historyaccount.blob.core.windows.net",
+            "ELV_AUDIT_BLOB_CONTAINER": "poc001-config-history",
+        }
+        self.path.write_text(json.dumps(self.settings, indent=2), encoding="utf-8-sig")
+        self.original = self.path.read_bytes()
+        self.output = self.enterContext(patch("sys.stdout", new_callable=io.StringIO))
+        self.errors = self.enterContext(patch("sys.stderr", new_callable=io.StringIO))
+        self.enterContext(patch.dict(os.environ, {}, clear=True))
+        self.credential = self.enterContext(patch.object(self.setup, "ManagedIdentityCredential"))
+        self.container_type = self.enterContext(patch.object(self.setup, "ContainerClient"))
+        self.container = self.container_type.return_value.__enter__.return_value
+        self.container.get_container_properties.return_value = SimpleNamespace(public_access=None)
+
+    def apply(self):
+        python = self.setup.PROJECT / ".venv" / "Scripts" / "python.exe"
+        with patch.object(self.setup.sys, "platform", "win32"), \
+                patch.object(self.setup.sys, "executable", str(python)):
+            return self.setup.cli(["--config", str(self.path), "--apply", "--approved-azure-host"])
+
+    def test_default_preview_makes_no_credential_cloud_or_file_change(self):
+        self.assertEqual(self.setup.cli(["--config", str(self.path)]), 0)
+        self.assertIn("PREVIEW_ONLY", self.output.getvalue())
+        self.credential.assert_not_called()
+        self.container_type.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), self.original)
+
+    def test_apply_requires_explicit_host_approval_before_configuration_or_credentials(self):
+        self.assertEqual(self.setup.cli(["--config", str(self.path), "--apply"]), 2)
+        self.credential.assert_not_called()
+        self.container_type.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), self.original)
+
+    def test_missing_history_target_fails_preview_without_changing_local_file(self):
+        self.path.write_text(json.dumps({key: value for key, value in self.settings.items()
+                                         if key != "ELV_AUDIT_BLOB_CONTAINER"}), encoding="utf-8")
+        original = self.path.read_bytes()
+        self.assertEqual(self.setup.cli(["--config", str(self.path)]), 2)
+        self.assertIn("ELV_AUDIT_BLOB_CONTAINER", self.errors.getvalue())
+        self.assertEqual(self.path.read_bytes(), original)
+        self.credential.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows file replacement")
+    def test_missing_container_is_created_private_then_only_history_flag_changes(self):
+        self.container.get_container_properties.side_effect = [
+            self.setup.ResourceNotFoundError(), SimpleNamespace(public_access=None),
+        ]
+        self.assertEqual(self.apply(), 0)
+        self.container.create_container.assert_called_once_with(public_access=None, timeout=self.setup.REQUEST_TIMEOUT)
+        self.assertEqual(self.container.get_container_properties.call_count, 2)
+        self.credential.assert_called_once_with(client_id=RUNTIME_ID)
+        options = self.container_type.call_args.kwargs
+        self.assertEqual(options["account_url"], self.settings["ELV_AUDIT_BLOB_ACCOUNT_URL"])
+        self.assertEqual(options["container_name"], self.settings["ELV_AUDIT_BLOB_CONTAINER"])
+        self.assertIs(options["credential"], self.credential.return_value.__enter__.return_value)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {
+            **self.settings, "ELV_ENABLE_CONFIG_HISTORY": "true",
+        })
+        self.assertIn("CONTAINER_CREATED_PRIVATE", self.output.getvalue())
+        self.assertIn("HISTORY_ENABLED", self.output.getvalue())
+        self.container.set_container_access_policy.assert_not_called()
+        self.container.upload_blob.assert_not_called()
+        self.container.delete_container.assert_not_called()
+        self.assertEqual(list(self.directory.glob(".elv-history-*.tmp")), [])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows file replacement")
+    def test_existing_private_container_is_preserved_and_rerun_is_idempotent(self):
+        self.assertEqual(self.apply(), 0)
+        enabled_bytes = self.path.read_bytes()
+        with patch.object(self.setup, "_replace_config") as replace:
+            self.assertEqual(self.apply(), 0)
+            replace.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), enabled_bytes)
+        self.container.create_container.assert_not_called()
+        self.container.set_container_access_policy.assert_not_called()
+        self.assertIn("HISTORY_ALREADY_ENABLED", self.output.getvalue())
+
+    def test_existing_public_container_never_changes_access_or_enables_history(self):
+        for access in ("blob", "container"):
+            with self.subTest(access=access):
+                self.container.get_container_properties.return_value = SimpleNamespace(public_access=access)
+                self.assertEqual(self.apply(), 4)
+                self.assertEqual(self.path.read_bytes(), self.original)
+        self.container.create_container.assert_not_called()
+        self.container.set_container_access_policy.assert_not_called()
+
+    def test_create_race_rechecks_privacy_before_config_change(self):
+        self.container.get_container_properties.side_effect = [
+            self.setup.ResourceNotFoundError(), SimpleNamespace(public_access="blob"),
+        ]
+        self.container.create_container.side_effect = self.setup.ResourceExistsError()
+        self.assertEqual(self.apply(), 4)
+        self.assertEqual(self.container.get_container_properties.call_count, 2)
+        self.assertEqual(self.path.read_bytes(), self.original)
+        self.container.set_container_access_policy.assert_not_called()
+
+    def test_permission_failure_leaves_flag_disabled_and_redacts_raw_error(self):
+        error = self.setup.HttpResponseError("PRIVATE_PROVIDER_BODY")
+        error.status_code = 403
+        self.container.get_container_properties.side_effect = self.setup.ResourceNotFoundError()
+        self.container.create_container.side_effect = error
+        self.assertEqual(self.apply(), 4)
+        self.assertIn("HTTP 403", self.errors.getvalue())
+        self.assertNotIn("PRIVATE_PROVIDER_BODY", self.errors.getvalue())
+        self.assertEqual(self.path.read_bytes(), self.original)
+        self.container.delete_container.assert_not_called()
+
+    def test_failed_verification_after_create_leaves_flag_disabled(self):
+        self.container.get_container_properties.side_effect = [
+            self.setup.ResourceNotFoundError(), self.setup.AzureError("PRIVATE_PROVIDER_BODY"),
+        ]
+        self.assertEqual(self.apply(), 4)
+        self.container.create_container.assert_called_once()
+        self.assertEqual(self.path.read_bytes(), self.original)
+        self.container.delete_container.assert_not_called()
+        self.assertNotIn("PRIVATE_PROVIDER_BODY", self.errors.getvalue())
+
+    def test_inherited_secret_is_rejected_before_credential_or_cloud_use(self):
+        os.environ["AZURE_CLIENT_SECRET"] = "PRIVATE_VALUE"
+        self.assertEqual(self.apply(), 2)
+        self.assertIn("AZURE_CLIENT_SECRET", self.errors.getvalue())
+        self.assertNotIn("PRIVATE_VALUE", self.errors.getvalue())
+        self.credential.assert_not_called()
+        self.container_type.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), self.original)
+
+    def test_concurrent_runtime_edit_is_not_overwritten(self):
+        changed = {**self.settings, "AZURE_OPENAI_DEPLOYMENT": "new-deployment"}
+
+        def get_properties(**kwargs):
+            self.path.write_text(json.dumps(changed), encoding="utf-8")
+            return SimpleNamespace(public_access=None)
+
+        self.container.get_container_properties.side_effect = get_properties
+        self.assertEqual(self.apply(), 4)
+        self.assertEqual(json.loads(self.path.read_text()), changed)
+        self.assertIn("not overwritten", self.errors.getvalue())
+
+    def test_local_replace_failure_preserves_original_and_never_deletes_container(self):
+        with patch.object(self.setup, "_replace_config", side_effect=OSError("PRIVATE_PATH")):
+            self.assertEqual(self.apply(), 5)
+        self.assertEqual(self.path.read_bytes(), self.original)
+        self.assertEqual(list(self.directory.glob(".elv-history-*.tmp")), [])
+        self.assertNotIn("PRIVATE_PATH", self.errors.getvalue())
+        self.container.delete_container.assert_not_called()
 
 
 if __name__ == "__main__":

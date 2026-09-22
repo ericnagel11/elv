@@ -133,3 +133,33 @@ replaced or marked complete by this reduced Windows milestone.
 - [ ] T041 User stops both processes, installs matching requirements in the
   existing venv, restarts via the Windows launcher and verifies healthcare
   comparisons and configuration editing locally. No automatic reseeding.
+  Dependency installation/restart and 258 offline tests completed on 2026-09-22;
+  user response/filter/citation feedback is being addressed below.
+
+## Follow-up — Search diagnostics and inline citations (2026-09-22)
+
+- [X] T042 Surface sanitized Search query rejections as task errors, not agent
+  outages; remove the incompatible sample filter hint from the VM form.
+- [X] T043 Validate inline marker presence/source numbers, withhold invalidly
+  cited answers without fabricated citations or automatic retry, and propagate
+  applied citation style/status to the UI. Label retrieved sources explicitly.
+- [X] T044 Deploy the verified local diagnostic/citation updates and record
+  health checks; leave saved Azure configuration and model testing to the user.
+
+## Follow-up — VM Blob configuration history (2026-09-22)
+
+- [X] T045 Add explicit default-off VM history using the approved runtime
+  identity, preserving full-mode credential and edit boundaries; wire versioned
+  live writes and grouped save warnings to the existing best-effort recorder.
+- [X] T046 Add an opt-in Change history view and preserve history warnings across
+  single-key saves; test metadata, failures, no-ops, grouping and safe reads offline.
+- [X] T047 Stage the approved target with logging disabled and document the
+  container/access/activation handoff; complete regression and local checks.
+- [ ] T048 Authorized owner creates/confirms the private history container and
+  runtime identity permission; user enables history and performs the live save,
+  readback and warning checks. No live test or container creation by the assistant.
+- [X] T049 Add a separate preview-first history setup script that creates or
+  verifies the private container, then enables only the local history flag.
+  Preserve existing contents/policies and stop on public targets or denied access.
+- [X] T050 Verify script regressions, local preview and activation instructions.
+  Apply/container creation remains a user action under T048, not startup behavior.

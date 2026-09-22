@@ -20,6 +20,40 @@ only validate/read data or also upload onboarding content, as explained below.
 
 ## PoC001 application change history
 
+### Windows single-identity comparison option (2026-09-22)
+
+The user approved reusing the existing VM runtime identity for configuration
+history in the limited comparison workflow. The implementation is **staged but
+disabled**, because `poc001-config-history` still needs creating. The user chose
+implementation/offline testing only; no live storage probe or test event has
+been run for this option. Follow the
+[Windows activation steps](../windows/README.md#configuration-change-history-in-blob-storage).
+
+An optional, separate [Windows setup script](../windows/prepare_history.py) now
+previews the configured target locally and, only with `--apply --approved-azure-host`,
+creates the missing private container and enables the local history flag after
+verification. It reuses an existing private container, refuses an existing public
+one without changing its policy, and makes no role/account/network changes or
+test uploads. Existing permission to create the container is required; a 403 is
+not permission to grant account-wide access. Only offline tests and preview have
+been performed. See [scripted setup](../windows/README.md#scripted-container-setup-and-local-activation).
+
+Set `ELV_ENABLE_CONFIG_HISTORY=true` only after the authorized storage owner
+creates/confirms the dedicated private container and the selected VM identity's
+effective read/create permission (normally container-scoped Storage Blob Data
+Contributor). This mode explicitly uses `ELV_MI_APP_CLIENT_ID` for both writing
+and reading; it does not silently borrow another credential. No separate audit
+identity, Log Analytics workspace, key or SAS is needed for this approved mode.
+
+Individual and grouped live configuration edits use version checks, preserve
+known before/after values and display logging warnings separately. No-op changes
+do not create events; no questions, generated answers, retrieved documents or
+raw errors are stored. A Change history tab reads only after explicit Refresh.
+This is **not independent or immutable auditing**: the shared identity can read
+and change history, and all local VM users/code share its trust boundary.
+
+### Full-governance identity policy (unchanged)
+
 This is **separate from knowledge onboarding and Search indexing**. Use the
 existing account endpoint `https://tenxengbenefitaistandard.blob.core.windows.net`
 and a dedicated **private, owner-precreated** container, `poc001-config-history`.

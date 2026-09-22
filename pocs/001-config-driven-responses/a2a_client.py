@@ -19,6 +19,10 @@ class A2AClientError(RuntimeError):
     pass
 
 
+class A2ATaskError(A2AClientError):
+    """The agent was reached but rejected or failed the requested task."""
+
+
 class ConfiguredAgentClient:
     def __init__(
         self,
@@ -86,7 +90,7 @@ class ConfiguredAgentClient:
                 if task.status.HasField("message")
                 else "No status detail was returned"
             )
-            raise A2AClientError(f"A2A task did not complete: {detail}")
+            raise A2ATaskError(f"A2A task did not complete: {detail}")
 
         answer = ""
         provenance = {}
@@ -107,6 +111,9 @@ class ConfiguredAgentClient:
             "profile_slot": provenance.get("profileSlot", profile_slot),
             "configuration_revision": provenance.get("configurationRevision"),
             "prompt_asset": provenance.get("promptAsset"),
+            "grounded": provenance.get("grounded"),
+            "citation_style": provenance.get("citationStyle", "not_reported"),
+            "citation_status": provenance.get("citationStatus", "not_checked"),
             "citations": provenance.get("citations", []),
             "result": {
                 "text": answer,

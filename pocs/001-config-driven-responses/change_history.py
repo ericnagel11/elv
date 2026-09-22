@@ -4,7 +4,7 @@ No provisioning, account keys, SAS, Log Analytics queries, background work, or
 local fallback. Blob create-only writes are not WORM or a transaction with App
 Configuration: a process crash or failed upload can leave a gap. Config values
 are intentionally recorded; operators must not put secrets or personal data in
-the twelve approved experience/knowledge settings. Arbitrary error messages,
+the approved experience/knowledge settings. Arbitrary error messages,
 credentials, token claims, and extra caller metadata are never serialized.
 
 Callers select the default 24-hour window and pass timezone-aware datetimes to
@@ -55,6 +55,10 @@ CONFIG_KEYS = frozenset({
     "experience:response_structure", "experience:persona", "experience:prompt_asset",
     "knowledge:enabled", "knowledge:index", "knowledge:filter", "knowledge:top_k",
     "knowledge:query_mode", "knowledge:citation_style",
+    "knowledge:title_field", "knowledge:content_field", "knowledge:url_field",
+    "knowledge:industry_field", "knowledge:audience_field", "knowledge:status_field",
+    "knowledge:effective_date_field", "knowledge:state_field", "knowledge:source_field",
+    "knowledge:search_fields",
 })
 OPERATIONS = frozenset({
     "save", "set_value", "update", "publish", "publish_draft", "publish_key",
@@ -248,6 +252,8 @@ def record_event(event: dict) -> list[str]:
     client = credential = None
     phase = "configuration"
     try:
+        if rbac.comparison_mode() and not rbac.config_history_enabled():
+            return []
         if backend() == "loganalytics":
             return []
         settings = _settings()
@@ -393,6 +399,8 @@ def load_events(start: datetime, end: datetime) -> HistoryPage:
         raise ValueError("History requires a positive interval of at most 30 days.")
     client = credential = None
     try:
+        if rbac.comparison_mode() and not rbac.config_history_enabled():
+            raise ValueError("Comparison history is disabled.")
         if backend() != "blob":
             raise ValueError("Blob history is not the selected backend.")
         settings = _settings()

@@ -26,7 +26,7 @@ import change_history
 import config as cfg
 import knowledge
 import rbac
-from a2a_client import A2AClientError, ConfiguredAgentClient
+from a2a_client import A2AClientError, A2ATaskError, ConfiguredAgentClient
 from config import AccessDenied, CredentialError, endpoints_summary, load_profile
 from config_editor import render_search_form, reset_results
 from experience_runtime import GROUNDED_ASSET, run_grounded
@@ -166,11 +166,14 @@ def live_search_editor(label: str) -> None:
 
 
 def render_blob_history():
-    st.markdown(
-        "**Application-recorded change history.** Includes PoC saves, publishes and "
-        "permission-test outcomes; excludes direct Portal/CLI/seed changes. "
-        "Persona identifies an acting service credential, not an authenticated person."
-    )
+    if rbac.comparison_mode():
+        st.warning("Shared VM identity for history reads and writes. Not per-user attribution or tamper-proof storage.")
+    else:
+        st.markdown(
+            "**Application-recorded change history.** Includes PoC saves, publishes and "
+            "permission-test outcomes; excludes direct Portal/CLI/seed changes. "
+            "Persona identifies an acting service credential, not an authenticated person."
+        )
     st.caption(
         "Best-effort history: storage failures do not block configuration writes. "
         "No tamper-proof or completeness guarantee. Do not put secrets or patient data in configuration."
@@ -192,7 +195,8 @@ def render_blob_history():
     if loaded_hours != hours:
         st.info("Refresh to apply the changed time window.")
         return
-    st.caption(f"Loaded at {loaded_at}; last {loaded_hours} hours. Audit-reader credential used.")
+    reader = "Shared VM runtime identity used." if rbac.comparison_mode() else "Audit-reader credential used."
+    st.caption(f"Loaded at {loaded_at}; last {loaded_hours} hours. {reader}")
     for warning in page.warnings:
         st.warning(warning)
     store = st.selectbox("History store", ["All", "draft", "production"])
@@ -251,6 +255,9 @@ def render_answer(result: dict) -> None:
     as an empty string looks like the request was refused, so say what happened.
     """
     text = (result.get("text") or "").strip()
+    if result.get("finish_reason") == "citation_validation_failed":
+        st.warning(text)
+        return
     if text:
         st.markdown(text)
         if result.get("finish_reason") == "length":
@@ -289,7 +296,7 @@ def render_variant(column, title: str, profile: dict, result: dict) -> None:
 
         citations = result.get("citations") or []
         if citations:
-            with st.expander(f"Sources ({len(citations)})", expanded=True):
+            with st.expander(f"Retrieved sources ({len(citations)})", expanded=True):
                 st.table([
                     {"Source": str(int(item["n"])), "Title": item["title"],
                      "Status": item.get("status", ""), "State": item.get("state", ""),
@@ -314,7 +321,7 @@ def render_variant(column, title: str, profile: dict, result: dict) -> None:
             with st.expander("A2A task provenance"):
                 st.table(
                     [
-                        {"field": key, "value": value}
+                        {"field": key, "value": str(value)}
                         for key, value in provenance.items()
                     ]
                 )
@@ -379,6 +386,7 @@ def render_grounded(column, title: str, scope: dict, bundle: dict) -> None:
 try:
     comparison = rbac.comparison_mode()
     configuration_editing = rbac.config_editing_enabled()
+    configuration_history = rbac.config_history_enabled()
     rag_available = rbac.rag_enabled()
     if comparison:
         rbac.runtime_identity_id()
@@ -484,8 +492,16 @@ st.caption("Healthcare member-support demo. Use synthetic questions only; do not
 render_mutation_notice()
 
 if comparison:
+    labels = ["Experience comparison"]
     if configuration_editing:
-        tab_experience, tab_configuration = st.tabs(["Experience comparison", "Configuration"])
+        labels.append("Configuration")
+    if configuration_history:
+        labels.append("Change history")
+    if len(labels) > 1:
+        tabs = dict(zip(labels, st.tabs(labels)))
+        tab_experience = tabs["Experience comparison"]
+        tab_configuration = tabs.get("Configuration")
+        tab_history = tabs.get("Change history")
     else:
         tab_experience = st.container()
 else:
@@ -559,6 +575,8 @@ with tab_experience:
                         "profile_slot": baseline["profile_slot"],
                         "configuration_revision": baseline["configuration_revision"],
                         "prompt_asset": baseline["prompt_asset"],
+                        "citation_style": baseline.get("citation_style", "not_reported"),
+                        "citation_status": baseline.get("citation_status", "not_checked"),
                     }
                     candidate_result = dict(candidate["result"])
                     candidate_result["citations"] = candidate.get("citations", [])
@@ -568,6 +586,8 @@ with tab_experience:
                         "profile_slot": candidate["profile_slot"],
                         "configuration_revision": candidate["configuration_revision"],
                         "prompt_asset": candidate["prompt_asset"],
+                        "citation_style": candidate.get("citation_style", "not_reported"),
+                        "citation_status": candidate.get("citation_status", "not_checked"),
                     }
                     st.session_state["results"] = {
                         "message": user_message,
@@ -578,6 +598,8 @@ with tab_experience:
                     }
         except (AccessDenied, CredentialError) as denied:
             show_denied(denied)
+        except A2ATaskError as problem:
+            st.error(str(problem))
         except A2AClientError as problem:
             st.error(f"The A2A response agent is unavailable: {problem}")
             st.caption(
@@ -615,6 +637,8 @@ if comparison:
             saved_key = st.session_state.pop("live_config_saved", None)
             if saved_key:
                 st.success(f"Saved to Azure: {saved_key}")
+                for warning in sorted(set(st.session_state.pop("live_config_audit_warnings", []))):
+                    st.warning(warning)
             area = st.selectbox("Configuration area", options=["Experience", "Knowledge"], key="live_config_area") if rag_available else "Experience"
             edit_prefix = cfg.KNOWLEDGE_PREFIX if area == "Knowledge" else cfg.EXPERIENCE_PREFIX
             editable_keys = cfg.COMPARISON_KNOWLEDGE_KEYS if area == "Knowledge" else cfg.EDITABLE_KEYS
@@ -694,16 +718,28 @@ if comparison:
                             )
                             st.session_state["live_config_loaded"] = {"target": selected, **saved}
                             st.session_state["live_config_saved"] = f"{edit_profile} / {edit_prefix}{edit_key}"
+                            st.session_state["live_config_audit_warnings"] = saved.get("audit_warnings", [])
                             clear_comparison_state()
                             st.rerun()
-            except (AccessDenied, CredentialError) as denied:
-                show_denied(denied)
-            except cfg.ConfigurationConflict as problem:
-                st.warning(str(problem))
-            except (ValueError, rbac.OperationDisabled) as problem:
-                st.error(str(problem))
-            except AzureError:
-                st.error("App Configuration could not complete the request. Check connectivity or whether the setting is locked.")
+            except (AccessDenied, CredentialError, cfg.ConfigurationConflict,
+                    ValueError, rbac.OperationDisabled, AzureError) as problem:
+                if isinstance(problem, (AccessDenied, CredentialError)):
+                    show_denied(problem)
+                elif isinstance(problem, cfg.ConfigurationConflict):
+                    st.warning(str(problem))
+                elif isinstance(problem, (ValueError, rbac.OperationDisabled)):
+                    st.error(str(problem))
+                else:
+                    st.error("App Configuration could not complete the request. Check connectivity or whether the setting is locked.")
+                outcome = getattr(problem, "mutation_result", None)
+                if outcome:
+                    if outcome.outcome == "unknown":
+                        st.warning("The write outcome is unconfirmed. Reload the setting before retrying.")
+                    for warning in sorted(set(outcome.audit_warnings)):
+                        st.warning(warning)
+    if configuration_history:
+        with tab_history:
+            render_blob_history()
     st.stop()
 
 

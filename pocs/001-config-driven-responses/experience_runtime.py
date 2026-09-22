@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 from dataclasses import dataclass
 from typing import Callable
@@ -19,6 +20,14 @@ SEARCH_DISABLED_NOTE = (
     "Search grounding is disabled by configuration. "
     "This response uses the experience prompt without Search references."
 )
+
+
+def _inline_citation_status(text: str, source_count: int) -> str:
+    markers = re.findall(r"\[([0-9]+)\]", text)
+    if not markers:
+        return "missing"
+    allowed = {str(position) for position in range(1, source_count + 1)}
+    return "present" if all(marker in allowed for marker in markers) else "invalid"
 
 
 def _revision(profile: dict, scope: dict | None = None) -> str:
@@ -90,10 +99,26 @@ def run_grounded(
     inputs["context"] = knowledge.format_context(
         found["documents"], scope.get("citation_style")
     )
+    result = generate_response(GROUNDED_ASSET, inputs)
+    citation_status = "not_checked"
+    if inputs["citation_style"] == "none":
+        citation_status = "not_requested"
+    elif inputs["citation_style"] == "inline" and found["documents"] and (result.get("text") or "").strip():
+        citation_status = _inline_citation_status(result.get("text") or "", len(found["documents"]))
+        if citation_status != "present":
+            result = {
+                **result,
+                "text": (
+                    "The model did not return valid inline source citations, so its answer was withheld. "
+                    "The retrieved sources may not answer this question. Review their relevance before trying again."
+                ),
+                "finish_reason": "citation_validation_failed",
+            }
     return {
-        "result": generate_response(GROUNDED_ASSET, inputs),
+        "result": result,
         "found": found,
         "grounded": bool(found["documents"]),
+        "citation_status": citation_status,
     }
 
 
@@ -184,6 +209,7 @@ class ConfiguredResponseRuntime:
             )
             result = bundle["result"]
             found = bundle["found"]
+            citation_status = bundle.get("citation_status", "no_sources" if not found["documents"] else "not_checked")
         else:
             result = run_variant(binding.profile, user_message)
             found = {
@@ -191,11 +217,14 @@ class ConfiguredResponseRuntime:
                 "notes": [SEARCH_DISABLED_NOTE] if grounded else [],
                 "index": None,
             }
+            citation_status = "not_requested"
 
         return {
             "result": result,
             "found": found,
             "grounded": bool(found["documents"]),
+            "citation_style": binding.knowledge_scope.get("citation_style", "inline") if grounded else "none",
+            "citation_status": citation_status,
             "profile_slot": binding.profile_slot,
             "configuration_revision": binding.revision,
             "prompt_asset": (

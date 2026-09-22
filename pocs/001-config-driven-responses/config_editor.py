@@ -39,14 +39,15 @@ def _display(value) -> str:
         return f"<{type(value).__name__}: not printable>"
 
 
-def _field_caption(st, scope: dict, key: str, initial: dict, invalid: dict) -> None:
+def _field_caption(st, scope: dict, key: str, initial: dict, invalid: dict, *, show_default=True) -> None:
     if key not in scope:
-        st.caption(f"knowledge:{key} — Not stored; configuration default: {DEFAULTS[key]!r}.")
+        st.caption(
+            f"knowledge:{key} — Not stored; configuration default: {DEFAULTS[key]!r}."
+            if show_default else f"knowledge:{key} — Not stored; load the selected profile before editing."
+        )
         return
-    caption = (
-        f"knowledge:{key} — Stored: {_display(scope[key])}; "
-        f"default if absent: {DEFAULTS[key]!r}."
-    )
+    caption = f"knowledge:{key} — Stored: {_display(scope[key])}"
+    caption += f"; default if absent: {DEFAULTS[key]!r}." if show_default else "."
     if key in invalid:
         caption += f" Invalid stored value: {invalid[key]}"
         if key in _TEXT_FIELDS and isinstance(scope[key], str):
@@ -119,11 +120,17 @@ def render_search_form(st, scope: dict, *, editable: bool, widget_key: str,
             key=f"{prefix}:filter", disabled=disabled,
             help="Passed unchanged apart from outer whitespace. OData and field names are not validated locally.",
         )
-        _field_caption(st, scope, "filter", initial, invalid)
-        st.caption(
-            f"OData example: {DEFAULTS['filter']}. Confirm your index schema and approved scope; "
-            "broadening a filter may include unapproved content."
-        )
+        _field_caption(st, scope, "filter", initial, invalid, show_default=index_options is None)
+        if index_options is None:
+            st.caption(
+                f"OData example: {DEFAULTS['filter']}. Confirm your index schema and approved scope; "
+                "broadening a filter may include unapproved content."
+            )
+        else:
+            st.caption(
+                "Filter field names are case-sensitive and must be filterable in the selected index. "
+                "Field mappings do not rename fields inside an OData filter."
+            )
         st.warning(
             "A blank filter applies no OData restriction and may broaden retrieval. "
             "Saving a blank filter requires the acknowledgement below."
