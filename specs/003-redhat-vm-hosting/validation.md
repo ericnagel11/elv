@@ -464,15 +464,17 @@ test to be performed by the user. No container, role or network change was made.
   stayed running. Both health endpoints returned `ok`, the UI root returned
   HTTP 200, and listeners remained loopback-only on ports 8501 and 9999.
 
-### Pending activation
+### Activation status at the implementation checkpoint
 
-T048 remains open. An authorized owner must create/confirm the private container
+At this checkpoint T048 remained open. An authorized owner needed to create/confirm the private container
 and effective read/create access for the existing VM identity. The user can then
 set the flag to `"true"`, restart the UI, make an intentional non-sensitive
 configuration edit, and verify its event through Change history or the container.
 The exact [activation steps](../../deployment/windows/README.md#configuration-change-history-in-blob-storage)
 are documented. Container existence, Blob permissions/network access, retention
-and actual live history persistence have **not** been verified by this work.
+and actual live history persistence had **not** been verified at this checkpoint.
+The later [activation and user acceptance](#history-activation-and-user-acceptance-2026-09-23)
+record below supersedes that status, not the historical test results.
 
 ## History container setup script — 2026-09-22
 
@@ -502,9 +504,95 @@ the history flag remained `"false"`. `pip check`, editor diagnostics, links and
 whitespace checks passed. No new packages, process restart, Azure request,
 container, blob, role, network setting or model request was made in this step.
 
-T049-T050 are complete; T048 remains pending the authorized user apply and live
-history test. Creating/reading container properties does not prove future event
+T049-T050 were complete at the preview checkpoint; T048 was pending the separately
+authorized apply and live history test. Creating/reading container properties does not prove future event
 upload/list/download permission. A created container can remain if a later local
 update fails; the script does not roll back or delete it. The
 [scripted activation instructions](../../deployment/windows/README.md#scripted-container-setup-and-local-activation)
 include permission prerequisites, restart steps and failure handling.
+
+## History activation and user acceptance (2026-09-23)
+
+This dated update supersedes the staged-disabled/pending-container status above.
+It does not imply that the earlier offline runs included live Azure operations.
+
+| Date and source | Operation or observation | Evidence scope |
+|---|---|---|
+| 2026-09-22, explicit user request and observed script result | Ran the separate history setup with `--apply --approved-azure-host` | `CONTAINER_CREATED_PRIVATE` and `HISTORY_ENABLED` for `tenxengbenefitaistandard/poc001-config-history`; runtime JSON flag set to true using the existing managed identity |
+| 2026-09-22, observed UI-only restart | Launcher validation passed; new UI process loaded the updated settings | UI/agent health returned HTTP 200; listeners stayed on loopback. The agent was unchanged in this history-only restart |
+| 2026-09-23, user confirmation during documentation review | Blob history configuration save/readback verified | Successful history path is user-confirmed, not independently repeated by the assistant or supported by new event contents/screenshots in this record |
+
+The setup did not change roles, networking, account settings or existing blobs
+and uploaded no test event. Successful create/property checks and the subsequent
+save/readback do not inventory effective role assignments, prove container-only
+access, verify Private Link, establish immutability, or approve retention.
+T048's successful preparation/save/readback scope is complete. T051 retains
+role-scope, retention and live warning-path review. Do not infer completion of
+configuration-to-model refresh tests from the history test alone.
+
+## Citation abstention deployment (2026-09-22)
+
+The prompt/runtime contract now distinguishes an exact `NO_SUPPORTED_ANSWER`
+from uncited substantive model output. The former produces a safe
+`insufficient_evidence` result; extra uncited advice and invalid inline source
+numbers remain withheld. The check does not establish claim-level support.
+The latest recorded **276 PoC001 offline tests passed**, including rendered
+prompts, abstention and A2A provenance. The agent alone was then restarted;
+UI/agent health returned HTTP 200 and both remained loopback-only. No new model
+or Search query was submitted by the assistant to verify this deployment.
+
+Stored pre-restart tasks showed missing inline markers for the default appeals
+question and medical-policy source titles. Rejected drafts were not retained,
+so the exact text cannot establish whether a particular failure was an uncited
+answer or a legitimate refusal. Neither source titles nor passing marker syntax
+prove that the corpus contains a suitable answer. Existing displayed results
+are not rewritten by this change.
+
+## Documentation review scope (2026-09-23)
+
+The user confirmed an existing corpus of hundreds of thousands of **source
+documents**, including medical policies in Blob Storage and administrative
+guidance/forms/FAQs. Metadata quality, resulting chunk counts and full inclusion
+in the current query scope are unassessed. The approved documentation describes
+both shared and caller-specific retrieval, without choosing a new deployed
+security model. PoC002 code exists but live end-to-end verification remains
+unconfirmed. Proposed multi-agent coordination is read-only guidance, not
+clinical decisions, claims access or appeal submission.
+
+Documentation edits and their checks do not provision resources, change runtime
+settings, rerun application tests or establish new inference/scale results.
+
+### Documentation implementation checks
+
+The 2026-09-23 update changed nine existing Markdown files only: the two design
+documents, two PoC READMEs, Windows and Storage runbooks, and this feature's
+plan/tasks/validation records. No application code, prompt asset, runtime JSON,
+dependency, Azure service, identity permission or running process was changed.
+
+- Local link targets, 21 Markdown heading anchors, balanced code fences,
+  conflict markers and `git diff --check` passed. Editor diagnostics reported
+  no errors in the edited documents.
+- All eight Mermaid blocks across the two design documents parsed and rendered
+  using Mermaid 11.4.1 in a separate `about:blank` browser page. Normalized source
+  fingerprints matched the Markdown blocks. A sequence-label syntax defect was
+  corrected; wide flowcharts were reorganized for readable document-width
+  rendering, and the coordinator's group-title overlap was removed.
+- The targeted stale-claim scan found no remaining current-state assertions
+  that history is staged/disabled, PoC002 is unbuilt, or a sentinel makes writes
+  atomic. Historical checkpoints remain explicitly dated and superseded.
+- A documentation-only walkthrough checked the proposed paths below. These are
+  design checks, **not execution tests of an implemented coordinator or index**.
+
+| Review case | Documented behavior |
+|---|---|
+| Simple versus compound request | Single-capability path or bounded approved subtasks, with one final presentation persona |
+| Missing plan/date or inadequate evidence | Clarify or decline; do not infer eligibility, fabricate citations or widen mandatory scope |
+| Required/optional specialist failure | Block dependent advice or explicitly label independent supported portions |
+| Conflicting source versions or indirect instructions | Reviewed authority/version policy or unresolved outcome; retrieved text cannot grant tools/access |
+| Caller-specific content | Enforce scope on queries, chunks, lookups, caches, artifacts, facets and source downloads |
+| Missing tags, obsolete chunks or schema evolution | Metadata assessment, authoritative correction, propagation/backfill and evaluated cutover/rollback |
+
+T052-T056 are complete. T051 and the independent hosting/security/quality gates
+remain open. The 276-test result above is historical application evidence, not
+a new test run for this documentation-only change. No new Blob event, Search
+query, model request, load test or PoC002 deployment was performed.

@@ -11,8 +11,10 @@ Use the **same exact question in grounded and ungrounded modes**:
 
 Baseline and candidate retain different tone, detail, reading level and structure;
 both are Contoso Health Plan administrative member support, not different
-industries. Use synthetic content only: no PHI, member IDs, claim numbers,
-diagnoses, tokens or secrets in messages, configuration or exported evidence.
+industries. Use synthetic questions and configuration, and only expressly
+approved source material. The VM reuses an approved existing medical-policy
+index; repository sample documents are synthetic. Do not put PHI, member IDs,
+claim numbers, diagnoses, tokens or secrets in chat, configuration or evidence.
 
 **Implemented:** the Blob history contract is in
 [change_history.py](change_history.py), the six-key Search contract in
@@ -29,8 +31,11 @@ remains required; local mocked tests do not establish live Blob permissions.
 full-governance setup below. It keeps the existing single managed identity,
 App Configuration/OpenAI/Search resources, external runtime JSON and localhost
 listeners. Healthcare prompts and the grouped RAG form work in that mode too;
-separate draft identities are not enabled. Optional VM Blob history is implemented
-behind an explicit opt-in, currently disabled until its private container exists.
+separate draft identities are not enabled. VM Blob history was explicitly
+enabled after private container creation on 2026-09-22. The user confirmed live
+save/readback on 2026-09-23; see the
+[dated evidence](../../specs/003-redhat-vm-hosting/validation.md#history-activation-and-user-acceptance-2026-09-23).
+Its default remains off for new deployments, and it is not immutable auditing.
 
 ## What changes without a code release
 
@@ -38,9 +43,12 @@ behind an explicit opt-in, currently disabled until its private container exists
   structure and the selected versioned prompt asset.
 - `knowledge:*` selects an existing index/alias, OData scope, result count,
   query mode, citations and whether retrieval is enabled.
-- An experience designer edits the draft `candidate`; an approver publishes to
+- In full-governance mode, a designer edits the draft `candidate`; an approver publishes to
   the production `candidate`. Both prefixes use the same App Configuration RBAC
   boundary. Labels alone do not provide separate store-level authorization.
+- In the current VM mode, explicit live saves update existing keys with ETags
+  under the shared runtime identity. Both comparison labels are live; there is
+  no draft approval step or authenticated per-user attribution.
 - Configuration changes take effect in fresh runtime contexts after refresh.
   **New application code, prompt bodies, dependencies and environment settings
   still require deployment/restart.** Existing stored settings are not migrated
@@ -106,8 +114,9 @@ approved reusing the runtime managed identity for this limited mode's writes and
 reads; the full demo's distinct-identity policy below remains unchanged. History
 is best-effort configuration before/after evidence, not prompts/responses or
 per-user attribution. Storage failures remain separate from the save outcome.
-The target is staged but disabled until administrator preparation and a user-run
-live test are complete; the app never creates the container or grants roles.
+The target was prepared and enabled on 2026-09-22; save/readback was user-confirmed
+on 2026-09-23. The app never creates the container or grants roles. Remaining
+role-scope, retention and warning-path checks are separate from that successful test.
 
 Optional [existing-index RAG](../../deployment/windows/README.md#ground-responses-with-an-existing-search-index)
 maps `Content`, `Title`, `Status`, `State` and source metadata through
@@ -464,15 +473,24 @@ establish native Azure CLI quoting or live service behavior. Do not run
 
 Local verification on 2026-09-21 used Python 3.12 on Windows: 140 PoC tests,
 22 deployment/hosting tests and the PowerShell seed suite passed. This does not
-establish Python 3.14 compatibility or actual customer-VM acceptance.
+by itself establish customer-VM acceptance. Later checks on the actual VM used
+Python 3.14.7: 273 PoC tests plus 22 shared tests passed for history setup, and
+276 PoC tests passed after the final citation/abstention update on 2026-09-22.
+These are historical results, not test runs made for the documentation update.
 
 ### Customer-VM acceptance
 
-Capture the exact healthcare question in both modes, six Search settings with
+For the full-governance workflow, capture the healthcare question in both modes, six Search settings with
 draft/live differences, enabled/disabled retrieval evidence, new context behavior,
 real RBAC results and before/after history with filtered CSV. Test missing/denied
 history using mocks first; never revoke shared customer permissions to force a
 failure. Confirm reader can read but not upload at the dedicated container.
+
+The current single-identity VM is a different acceptance scope: live comparison
+and existing-index retrieval have prior evidence, and history save/readback is
+user-confirmed as of 2026-09-23. Its reader and writer intentionally share an
+identity, so it does not demonstrate reader/writer separation. Warning-path,
+retention and effective role-scope evidence remain separate open checks.
 
 Offline tests and editor diagnostics are not Azure/network acceptance. The
 [deployment tests](../../deployment/redhat/tests/test_deployment.py) cover
@@ -498,3 +516,29 @@ For production, add authenticated user attribution, a durable transactional
 change/outbox design, appropriate record retention and immutable storage if
 required, and independent operational monitoring. The presenter-only identity
 selector and warning-only audit failures are explicit PoC limitations.
+
+## Architecture decision and exception register
+
+This register applies the [reference standard](../../docs/reference-architecture-standard.md)
+to the current Windows comparison deployment. The user authorized limited local
+operation, live editing, existing-index retrieval and shared-identity history.
+That authorization is **not formal acceptance of every standard deviation**.
+The accountable architecture/security approver, review date and expiration date
+remain to be assigned. Until then, open entries below are not compliance claims.
+
+| ID and status | Decision and rationale | Risk and current constraint | Exit criterion and owner needed |
+|---|---|---|---|
+| VM-01: limited demo authorized; formal exception open | Existing Windows VM and foreground processes provide a presenter-accessible PoC without new hosting resources | No durable process hosting, reboot recovery or availability guarantee; UI and agent bind to loopback only and shared HTTPS remains deferred | Platform owner to approve lifecycle/expiry and select managed hosting or an explicitly reviewed VM operating model |
+| ID-01: limited demo authorized; formal exception open | One explicit managed identity reuses approved service access, including opted-in live editing and history | Same VM trust boundary and no per-user separation; application guards do not reduce Azure RBAC. Successful calls do not prove least-privilege assignments | Identity/security owner to inventory effective roles, separate workload/deployment/operations trust boundaries and authenticate callers before shared use |
+| A2A-01: open | Local HTTP+JSON proves the protocol with one runtime agent | No inbound OAuth/OIDC; in-memory task/context store and no caller-scoped persistence. A context ID is not authorization or a full conversation-memory guarantee | Application/security owner to provide HTTPS, per-operation authorization, scoped durable state, retention and cancellation/timeout controls |
+| AUD-01: successful history path user-confirmed; formal exception open | Best-effort Blob events make app configuration edits reviewable with a small footprint | Shared service attribution, possible gaps, no portal/CLI backfill or WORM; no distributed tracing/dashboard/alert acceptance | Operations/data owner to approve retention, review warning paths, independent audit needs and the standard's telemetry requirements |
+| REP-01: open | Scripts and runbooks reuse existing resources without reprovisioning | No complete Bicep/Terraform environment, verified service inventory, automated resource teardown or full reproducibility acceptance | Platform owner to supply IaC and record SKU/region/owner/cost/expiry/network/diagnostic evidence; never delete shared resources as demo cleanup |
+| RAG-01: bounded retrieval demonstrated; quality/security review open | Keyword queries reuse the approved existing index and preserve configured filters | No corpus-wide evaluation, caller-specific ACL enforcement or claim-to-source support validator; titles and marker numbers do not establish relevance | Content/security owner to assess metadata and corpus scope, curate evaluations and choose shared versus per-caller retrieval controls |
+
+The [whitepaper](../../docs/configurable-conversational-experience.md) distinguishes
+these current constraints from proposed multi-capability coordination and
+large-corpus retrieval. Those sections authorize no new agents, index changes,
+permission grants, clinical decisions or business actions. The
+[validation record](../../specs/003-redhat-vm-hosting/validation.md) is the dated
+evidence source; the tables of full-mode role intent elsewhere in this README
+are not an inventory of this VM's effective Azure assignments.

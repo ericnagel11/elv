@@ -1,5 +1,11 @@
 # Implementation plan: Red Hat VM hosting
 
+**Historical plan with dated follow-ups.** Later user approvals supersede earlier
+implementation-only checkpoints. See the [current evidence](validation.md#history-activation-and-user-acceptance-2026-09-23)
+and [documentation tasks](tasks.md#follow-up-documentation-accuracy-and-architecture-2026-09-23).
+The current request authorizes documentation changes only, not execution of the
+old deployment steps or proposed multi-agent/retrieval designs.
+
 ## Technical context
 
 - Existing Python 3.10+ PoCs; prefer an approved Python 3.11/3.12 for the VM.
@@ -306,3 +312,19 @@ transaction or file compare-and-swap. A container can remain if later steps fail
 do not delete it or overwrite configuration to manufacture rollback. Tests must
 cover preview, approval, creation/reuse/races/privacy, permission failures,
 idempotence and local preservation, with Storage mocked throughout.
+
+## Follow-up: documentation accuracy and architecture (2026-09-23)
+
+Implement the approved documentation plan in the existing whitepaper, reference
+standard, PoC READMEs, Windows/Storage runbooks and this feature's evidence/task
+record. Correct current identity, editing, Blob-history activation, refresh and
+retrieval claims before adding explicitly proposed compound-request coordination
+and large-corpus metadata guidance. Use read-only healthcare examples, cover both
+shared and caller-specific corpus access, and start with metadata assessment.
+
+Preserve the standard's security, identity, IaC and observability requirements;
+record VM exceptions and unresolved owners rather than claiming conformance.
+Keep new diagrams as Mermaid in Markdown, distinguish code-present PoC002 from
+live acceptance, and label user-confirmed history evidence. Validate document
+links, diagram syntax/rendering and scope. Do not change code, prompt assets,
+runtime JSON, services, Azure resources, permissions or Search indexes.

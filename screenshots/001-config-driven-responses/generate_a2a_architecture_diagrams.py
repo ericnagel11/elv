@@ -22,14 +22,14 @@ WHITE = "#FFFFFF"
 plt.rcParams["font.family"] = "DejaVu Sans"
 
 
-def canvas(title, subtitle):
-    fig, ax = plt.subplots(figsize=(16, 6), dpi=200)
+def canvas(title, subtitle, height=6):
+    fig, ax = plt.subplots(figsize=(16, height), dpi=200)
     ax.set_xlim(0, 16)
-    ax.set_ylim(0, 6)
+    ax.set_ylim(0, height)
     ax.axis("off")
     ax.text(
         8,
-        5.62,
+        height - 0.38,
         title,
         ha="center",
         va="center",
@@ -39,7 +39,7 @@ def canvas(title, subtitle):
     )
     ax.text(
         8,
-        5.18,
+        height - 0.82,
         subtitle,
         ha="center",
         va="center",
@@ -166,15 +166,16 @@ def render_before():
 
 def render_after():
     fig, ax = canvas(
-        "With A2A: Streamlit Calls a Separate Response Agent",
-        "A2A standardizes discovery, messages, tasks, contexts, and response artifacts.",
+        "A2A: A Reusable Response Service",
+        "Current PoC001 response path: one UI, one configured agent, separate Azure services.",
+        height=8,
     )
 
     ax.add_patch(
         FancyBboxPatch(
-            (6.95, 0.10),
-            8.35,
-            4.60,
+            (2.75, 1.45),
+            8.40,
+            5.05,
             boxstyle="round,pad=0.04,rounding_size=0.12",
             linewidth=1.5,
             edgecolor=AZ_DARK,
@@ -183,44 +184,75 @@ def render_after():
         )
     )
     ax.text(
-        7.18,
-        4.48,
-        "PRIVATE AGENT BOUNDARY",
+        3.02,
+        6.15,
+        "TRUSTED WINDOWS VM / LOOPBACK",
         ha="left",
         va="center",
         fontsize=10,
         weight="bold",
         color=AZ_DARK,
     )
+    ax.add_patch(
+        FancyBboxPatch(
+            (11.90, 1.45),
+            3.65,
+            5.05,
+            boxstyle="round,pad=0.04,rounding_size=0.12",
+            linewidth=1.5,
+            edgecolor=AZ_BLUE,
+            facecolor="#F5F9FC",
+            zorder=0,
+        )
+    )
+    ax.text(
+        12.15, 6.15, "AZURE SERVICES",
+        ha="left", va="center", fontsize=10, weight="bold", color=AZ_DARK,
+    )
 
-    box(ax, 0.35, 2.2, 1.75, 1.0, "Customer", "asks a question", edge=GREEN)
-    box(ax, 2.65, 1.8, 2.7, 1.8, "Streamlit", "A2A client and UI", edge=ORANGE, fill="#FFF4EF")
-    box(ax, 7.35, 1.8, 3.05, 1.8, "Configured-response agent", "A2A task executor", edge=AZ_DARK)
-    box(ax, 11.35, 3.45, 3.25, 0.8, "App Configuration", "production settings")
-    box(ax, 11.35, 2.40, 3.25, 0.8, "Prompty assets", "private templates")
-    box(ax, 11.35, 1.35, 3.25, 0.8, "Azure AI Search", "governed knowledge")
-    box(ax, 11.35, 0.30, 3.25, 0.8, "Azure OpenAI", "model inference")
+    box(ax, 0.30, 3.70, 1.85, 1.45, "Presenter", "VM browser", edge=GREEN)
+    box(
+        ax, 3.05, 3.40, 2.65, 1.90, "Streamlit", "A2A client\ncomparison UI",
+        edge=ORANGE, fill="#FFF4EF",
+    )
+    box(
+        ax, 7.25, 3.40, 3.60, 1.90, "Configured-response\nagent",
+        "Resolve / retrieve / render\nvalidate output", edge=AZ_DARK,
+    )
+    box(ax, 7.25, 1.80, 3.60, 0.95, "Prompty assets", "deployed local templates")
+    box(ax, 12.15, 4.90, 3.15, 1.05, "App Configuration", "production profiles")
+    box(ax, 12.15, 3.45, 3.15, 1.05, "Azure AI Search", "read-only query")
+    box(ax, 12.15, 1.95, 3.15, 1.05, "Azure OpenAI", "model inference")
 
-    arrow(ax, (2.10, 2.85), (2.65, 2.85), "question", color=GREEN)
-    arrow(ax, (2.65, 2.30), (2.10, 2.30), "answer", color=GREEN)
-    arrow(ax, (5.35, 3.00), (7.35, 3.00), "A2A Message + Task", color=ORANGE)
-    arrow(ax, (7.35, 2.35), (5.35, 2.35), "A2A Artifact", color=ORANGE)
-    arrow(ax, (5.35, 3.72), (7.35, 3.72), "discover Agent Card", color=MUTE, dashed=True)
+    arrow(ax, (2.15, 4.75), (3.05, 4.75), "question", color=GREEN)
+    arrow(ax, (3.05, 4.05), (2.15, 4.05), "answer", color=GREEN)
+    arrow(ax, (5.70, 5.12), (7.25, 5.12), "Agent Card", color=MUTE, dashed=True)
+    arrow(ax, (5.70, 4.55), (7.25, 4.55), "A2A Message", color=ORANGE)
+    arrow(ax, (7.25, 3.90), (5.70, 3.90), "Task / Artifact", color=ORANGE)
 
-    arrow(ax, (10.40, 3.30), (11.35, 3.75), "read")
-    arrow(ax, (10.40, 2.95), (11.35, 2.80), "load")
-    arrow(ax, (10.40, 2.45), (11.35, 1.75), "search")
-    arrow(ax, (10.40, 2.05), (11.35, 0.70), "generate")
+    arrow(ax, (10.85, 4.95), (12.15, 5.42), "read")
+    arrow(ax, (10.85, 4.35), (12.15, 3.98), "query")
+    arrow(ax, (10.85, 3.70), (12.15, 2.48), "inference")
+    arrow(ax, (9.05, 2.75), (9.05, 3.40))
+    ax.text(
+        9.30, 3.07, "local read", ha="left", va="center",
+        fontsize=8.5, color=AZ_DARK,
+    )
+    ax.text(
+        4.38, 2.23,
+        "Response flow shown.\nConfig editing and history use\nseparate UI-to-Azure calls.",
+        ha="center", va="center", fontsize=9, color=MUTE,
+    )
 
     ax.text(
-        4.0,
-        0.55,
-        "Streamlit knows the capability contract,\nnot the prompt, filters, credentials, or Azure implementation.",
-        ha="center",
-        va="center",
-        fontsize=9.5,
-        color=MUTE,
-        style="italic",
+        8, 0.84,
+        "Solid arrows: execution calls   |   Dashed: discovery   |   Azure calls: HTTPS + managed identity",
+        ha="center", va="center", fontsize=9.5, color=INK,
+    )
+    ax.text(
+        8, 0.35,
+        "Local A2A uses loopback HTTP. A separate process is not an authenticated user boundary.",
+        ha="center", va="center", fontsize=9.5, color=MUTE,
     )
     save(fig, "a2a-after-architecture.png")
 

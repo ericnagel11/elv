@@ -16,6 +16,14 @@ The testable specification is
 
 Working markets: **en-US**, **es-MX**, **de-DE**.
 
+**Evidence status, 2026-09-23:** implementation exists for layered configuration,
+localized prompt resolution, disclosures, translation gates, drift reporting
+and optional language detection. The user has not confirmed an end-to-end live
+PoC002 run; the current Windows deployment is PoC001 only. The workflows below
+describe implemented paths and intended acceptance, not measured regional
+quality, provisioned Language/Search services or verified target-host readiness.
+Retail/returns fixtures remain synthetic and are separate from PoC001 healthcare.
+
 ## What it demonstrates
 
 1. **A market is a sparse set of overrides, and inheritance is visible.**

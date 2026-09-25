@@ -1,5 +1,11 @@
 # Tasks: Red Hat VM hosting
 
+This is a dated work record, not one deployment recipe. Later Windows milestones
+do not complete the earlier Red Hat/full-governance gates. The current status is
+recorded in [validation.md](validation.md#history-activation-and-user-acceptance-2026-09-23).
+The 2026-09-23 implementation scope is documentation only; open operational tasks
+below are not authorization to change services, permissions or application code.
+
 ## Phase 1 — Source implementation
 
 - [X] T001 [US3] Add shared tests in deployment/redhat/tests for both hosting
@@ -155,11 +161,29 @@ replaced or marked complete by this reduced Windows milestone.
   single-key saves; test metadata, failures, no-ops, grouping and safe reads offline.
 - [X] T047 Stage the approved target with logging disabled and document the
   container/access/activation handoff; complete regression and local checks.
-- [ ] T048 Authorized owner creates/confirms the private history container and
-  runtime identity permission; user enables history and performs the live save,
-  readback and warning checks. No live test or container creation by the assistant.
+- [X] T048 Create/confirm the private history container, enable history and verify
+  a changed configuration save/readback. The user explicitly authorized script
+  apply on 2026-09-22; it created the private container and enabled the flag,
+  followed by a UI restart. Save/readback was user-confirmed on 2026-09-23.
+  This does not verify exact role scope, retention or live warning paths; see T051.
 - [X] T049 Add a separate preview-first history setup script that creates or
   verifies the private container, then enables only the local history flag.
   Preserve existing contents/policies and stop on public targets or denied access.
 - [X] T050 Verify script regressions, local preview and activation instructions.
-  Apply/container creation remains a user action under T048, not startup behavior.
+  Setup requires explicit operator authorization, never application startup.
+- [ ] T051 Confirm effective least-privilege role scope, retention ownership and
+  live history warning/failure acceptance without changing shared permissions to
+  induce failures. This retains the unverified parts of the original T048.
+
+## Follow-up: documentation accuracy and architecture (2026-09-23)
+
+- [X] T052 Correct current-state evidence, governance, refresh, retrieval and
+  PoC002 status in the whitepaper and linked runbooks; retain historical evidence.
+- [X] T053 Document proposed bounded A2A coordination for compound read-only
+  healthcare guidance, including typed evidence, identity and failure boundaries.
+- [X] T054 Document large-corpus metadata assessment, field contracts, query
+  stages, access alternatives, lifecycle and evaluation without index changes.
+- [X] T055 Extend generic architecture review criteria and document the current
+  PoC exceptions without weakening normative requirements or inventing approval.
+- [X] T056 Validate documentation links, diagrams, consistency and Markdown-only
+  change scope. No deployment commands, model calls or application tests required.

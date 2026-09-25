@@ -17,11 +17,13 @@ The full-demo draft/persona/Blob-history implementation is retained separately;
 it does not require provisioning those resources for this single-identity VM.
 No stored Azure value is migrated by a code update.
 
-**Optional configuration history, 2026-09-22:** the user approved reusing this
-VM's runtime identity for Blob history writes and reads. The implementation is
-ready, but `ELV_ENABLE_CONFIG_HISTORY` is staged as `"false"` because the private
-history container still needs creating. No live Storage test was requested or
-performed. See [the activation steps](#configuration-change-history-in-blob-storage).
+**Configuration history status, 2026-09-23:** the user authorized the setup
+script on 2026-09-22. It created the private history container, set
+`ELV_ENABLE_CONFIG_HISTORY="true"`, and the UI was restarted. The user confirmed
+live configuration save/readback on 2026-09-23. This is not proof of independent
+audit identities, retention controls or the exact Azure role-assignment scope.
+See [the history runbook](#configuration-change-history-in-blob-storage) and
+the dated [validation record](../../specs/003-redhat-vm-hosting/validation.md#history-activation-and-user-acceptance-2026-09-23).
 
 The [launcher](run.py) starts either the Streamlit UI or its internal A2A agent.
 It does not install packages, request tokens during validation, change Azure,
@@ -400,13 +402,14 @@ only to absent settings and do not rename this VM's existing index fields.
 
 ### Configuration change history in Blob Storage
 
-**Implemented but disabled pending preparation.** This records application
+**Enabled on this VM; save/readback user-confirmed on 2026-09-23.** This records application
 configuration changes, not general logs, prompts, responses, RAG documents or
 feedback. Ordinary error logs still go to the local terminals and feedback to
 the existing local CSV. The approved target is the existing account
 `https://tenxengbenefitaistandard.blob.core.windows.net`, private container
-`poc001-config-history`. The user reports that the container needs creating and
-will perform the live acceptance test themselves.
+`poc001-config-history`, created by the user-authorized setup on 2026-09-22.
+The instructions below remain the repeatable preparation path for a new target;
+they are not a request to recreate this container or repeat the live test.
 
 The explicit comparison-mode option reuses `ELV_MI_APP_CLIENT_ID` for both writer
 and reader. This is the user's approved limited-PoC choice, **not independent
@@ -493,15 +496,18 @@ the reported issue, preview and rerun: existing private containers and enabled
 settings are preserved. Property verification does not prove future event upload,
 list or download permission; complete the separate live history test below.
 
-The script has been tested offline and previewed locally only. It has not yet
-been applied against this storage account; the staged flag remains `"false"`.
+After offline tests and a no-change preview, the user authorized live apply on
+2026-09-22. It returned `CONTAINER_CREATED_PRIVATE` and `HISTORY_ENABLED`.
+No role, network or account setting was changed. The script uploaded no test
+event; the subsequent save/readback evidence was supplied by the user.
 
 #### Enable and verify locally
 
-The following fields are already staged in the protected external runtime JSON,
-with history disabled. The script above sets the flag after preparing the private
-container. For manual preparation instead, change only the flag to `"true"` after
-the container/access checks; retain all existing endpoint, model, identity and RAG fields:
+The following fields are enabled in this VM's protected external runtime JSON.
+The application default remains disabled when the flag is absent. For a new
+target, the script sets the flag after preparing the private container. For
+manual preparation instead, change only the flag to `"true"` after the
+container/access checks; retain all existing endpoint, model, identity and RAG fields:
 
 ```json
 {
@@ -531,6 +537,11 @@ values and result. A changed key is stored as a unique JSON block blob under a
 UTC-date prefix, using `overwrite=False`. A no-op save creates no event. Reverting
 the value later is a second deliberate change and should produce its own event.
 No synthetic test event has been uploaded automatically.
+
+The user has confirmed the successful-save/readback path, not every scenario
+above. Effective role scope, retention ownership, live warning-path acceptance
+and formal architecture exceptions still need their own review. Do not revoke
+shared permissions or alter policies merely to induce a failure.
 
 #### Recorded scope and failure behavior
 

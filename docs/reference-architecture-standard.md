@@ -25,6 +25,20 @@ This standard defines a default architecture, not a mandatory product list.
 Deviations are permitted when documented in an architecture decision record
 (ADR) with rationale, risk, and an exit plan.
 
+**Review discipline (2026-09-23):** this is a normative standard, not a statement
+that every existing PoC already conforms. Each deliverable MUST distinguish
+deployed/verified behavior, user-confirmed evidence, historical demonstrations,
+implementation without live verification, and proposed architecture. Record
+evidence dates and provenance; source code, a health response or a screenshot
+alone does not prove authorization, answer quality or production readiness.
+
+An exception record MUST identify the requirement, rationale, risk, compensating
+controls, accountable owner, approval status, review/expiry date and exit criteria.
+Unknown approval is an open gap, not an accepted risk. The
+[PoC001 register](../pocs/001-config-driven-responses/README.md#architecture-decision-and-exception-register)
+is an application of this process, not a relaxation of this standard. Preferred
+services below are options; deployed and proposed inventories MUST be separate.
+
 ## 2. Architecture Principles
 
 1. **Managed first**: Use platform-as-a-service and serverless services before
@@ -50,6 +64,10 @@ Deviations are permitted when documented in an architecture decision record
 Every PoC MUST provide a diagram based on the following logical view. Service
 names, trust boundaries, protocols, identities, data stores, and external
 dependencies MUST be labeled.
+
+This is a reference palette. A PoC-specific diagram must select only its actual
+services; a proposed diagram must label its proposed status and corresponding
+inventory. Do not imply that every box below exists in the PoC deployment.
 
 ```mermaid
 flowchart LR
@@ -87,28 +105,33 @@ flowchart LR
 
     user -->|OIDC/OAuth 2.0| entra
     user -->|HTTPS| front
-    front --> apim
-    apim -->|validated request| host
-    host --> agent
-    host --> workflow
-    agent -->|inference| model
-    agent -->|guardrails| safety
-    agent -->|grounding| search
-    agent -->|approved tools| apim
-    host --> db
-    host --> storage
-    host --> bus
-    workflow --> bus
-    host -. managed identity .-> kv
-    agent -. managed identity .-> kv
-    host -. telemetry .-> monitor
-    agent -. telemetry .-> monitor
-    apim -. telemetry .-> monitor
+    front -->|HTTPS + validated identity context| apim
+    apim -->|HTTPS + backend workload authorization| host
+    host -->|HTTPS A2A or supported API + scoped token| agent
+    host -->|HTTPS + managed identity| workflow
+    agent -->|HTTPS inference + managed identity| model
+    agent -->|HTTPS safeguards + managed identity| safety
+    agent -->|HTTPS + managed identity and caller scope| search
+    agent -->|HTTPS approved tools + scoped token| apim
+    host -->|TLS + managed identity| db
+    host -->|HTTPS + managed identity| storage
+    host -->|TLS publish + managed identity| bus
+    workflow -->|TLS messaging + managed identity| bus
+    host -. HTTPS + managed identity .-> kv
+    agent -. HTTPS + managed identity .-> kv
+    host -. HTTPS redacted telemetry .-> monitor
+    agent -. HTTPS redacted telemetry .-> monitor
+    apim -. HTTPS redacted telemetry .-> monitor
     policy -. evaluates .-> edge
     policy -. evaluates .-> app
     policy -. evaluates .-> ai
     policy -. evaluates .-> data
 ```
+
+Legend: solid arrows are authenticated request/data paths; dotted arrows are
+secrets access, telemetry or governance evaluation as labeled. Protocol and
+credential details must be specialized for the actual selected services. The
+diagram does not imply an authenticated human identity from a workload token.
 
 ### Diagram Rules
 
@@ -120,6 +143,10 @@ flowchart LR
 - Do not include a service that is absent from the service inventory.
 - Do not use unlabeled arrows or generic boxes such as "backend" when a more
   precise responsibility is known.
+- Multi-agent diagrams MUST identify coordinator/specialist responsibilities,
+  parent/child task relationships, data/credential boundaries and failure paths.
+- Retrieval diagrams MUST show source publication, metadata/permission
+  propagation, chunk/index boundaries and query-time eligibility checks.
 
 ## 4. Service Inventory
 
@@ -149,6 +176,17 @@ solution uses and record the exact SKU or tier.
 | Configuration | Azure App Configuration | Managed service application settings | Keys, labels, feature flags, access identity |
 | Governance | Azure Policy and Defender for Cloud | Client-mandated equivalent controls | Initiatives, assignments, exemptions |
 
+For composed agents, also inventory capability IDs and owners, approved
+endpoints, Agent Card/protocol versions, typed input/output contract versions,
+auth audiences/scopes, dependencies, required/optional steps and execution limits.
+A capability registry can reference existing services; it is not a requirement
+to create a new Azure resource or one agent per persona.
+
+For retrieval, also inventory source-document and chunk counts, metadata/ACL
+authority, schema attributes, taxonomy/ingestion versions, embedding compatibility,
+publication/deletion synchronization and evaluation coverage. Record unknowns
+explicitly. A vector field or index name does not establish vector-query support.
+
 For each selected service, record:
 
 - Resource name and purpose
@@ -176,6 +214,15 @@ For each selected service, record:
   and time-bound activation.
 - Agent tools MUST execute under an identity whose permissions match the tool's
   function; an agent MUST NOT inherit broad deployment or administrator access.
+- Presentation personas, configuration labels, Agent Cards and task/context IDs
+  MUST NOT be treated as authorization. A workload identity is not human identity.
+- Delegated tasks MUST preserve the caller's permitted scope and the worker's
+  own restrictions. Each service MUST authorize its operations independently,
+  including task listing/reads, caches and source downloads; delegation MUST NOT
+  combine privileges into a broader effective scope.
+- Credentials MUST use reviewed transport/identity flows with the correct
+  audience and scope, not prompt text or model-directed credential switching.
+  Configuration pinning MUST NOT bypass entitlement revocation checks.
 
 ### 5.2 Secrets, Network, and Data Protection
 
@@ -205,6 +252,33 @@ For each selected service, record:
   appropriate, human approval.
 - Inputs retrieved from external sources MUST be treated as untrusted data, not
   agent instructions.
+- Specialist artifacts MUST also be treated as untrusted input: validate their
+  contracts, evidence and allowed effects before synthesis or further dispatch.
+
+### 5.4 Retrieval Eligibility and Metadata
+
+- The design MUST distinguish relevance metadata from security and mandatory
+  applicability rules. A model-generated topic tag MUST NOT grant access, approve
+  content or infer a customer's eligibility.
+- For a shared corpus, record the approved readership and content scope. For
+  caller-specific access, derive tenant/principal/group constraints from an
+  authenticated trusted context and enforce them outside the model on every
+  query, subquery, lookup, facet, cache and document-serving path.
+- Missing required permission, approval or applicability metadata MUST NOT be
+  interpreted as unrestricted or approved content. Define null semantics and
+  quarantine/failure behavior in the ingestion contract.
+- Every searchable chunk MUST retain its applicable parent permissions,
+  governance state, business scope and version lineage. Parent-only restrictions
+  are insufficient when child records are queried directly.
+- Mandatory filters MUST NOT be removed or widened merely to obtain results.
+  Uncertain relevance tags MAY be optional ranking signals within the permitted
+  scope. Validate query construction and escaping before service calls.
+- The design MUST state ACL/metadata synchronization and revocation behavior,
+  including stale-state handling and authorized direct-access paths. Hiding a
+  field with `retrievable=false` is not a complete authorization boundary.
+- Feature-level GA/preview status and API/source limitations MUST be recorded.
+  Application-enforced security filters and native document-permission features
+  MUST NOT be described as equivalent authentication mechanisms.
 
 ## 6. Data Flow
 
@@ -244,14 +318,19 @@ sequenceDiagram
     Agent-->>Obs: Agent, model, and tool telemetry
 ```
 
-| Step | Data | Classification | Source to destination | Protection | Retention/owner |
+The table groups the message numbers in the sequence above; the asynchronous
+message is optional. A PoC-specific sequence and table MUST agree after selecting
+its actual services and paths.
+
+| Messages | Data | Classification | Source to destination | Protection | Retention/owner |
 |---|---|---|---|---|---|
-| 1 | Authentication context | Internal | User to Entra ID | TLS, tenant policy, MFA/Conditional Access | Entra policy / identity owner |
-| 2 | API request | Solution-specific | Client to API Management | TLS, OAuth validation, WAF and quota policies | Application policy / product owner |
-| 3 | Grounding query/results | Solution-specific | Agent to knowledge store | Managed identity, RBAC, optional private endpoint | Data policy / data owner |
-| 4 | Prompt and completion | Solution-specific | Agent to model endpoint | Managed identity, content controls, redacted logging | AI policy / AI owner |
-| 5 | Event or command | Solution-specific | Application to Service Bus | Managed identity, RBAC, encryption | Messaging policy / application owner |
-| 6 | Telemetry | Internal, redacted | All components to monitoring | TLS, RBAC, ingestion controls | Monitoring retention / operations owner |
+| 1-2 | Authentication context | Internal | User and Entra ID | TLS, tenant policy, MFA/Conditional Access | Entra policy / identity owner |
+| 3-6 | Authorized request and task context | Solution-specific | Client through edge/application to agent | TLS, OAuth validation, backend authorization, WAF and quotas | Application policy / product owner |
+| 7-8 | Grounding query/results | Solution-specific | Agent and knowledge store | Managed identity, RBAC, caller scope, optional private endpoint | Data policy / data owner |
+| 9-10 | Prompt and completion | Solution-specific | Agent and model endpoint | Managed identity, content controls, redacted logging | AI policy / AI owner |
+| 11, 13 | Response, citations and operation ID | Solution-specific | Agent through application to caller | Authorized result scope, TLS and output validation | Application/data policy / product owner |
+| 12 (optional) | Event or command | Solution-specific | Application to Service Bus | Managed identity, RBAC, encryption | Messaging policy / application owner |
+| 14-16 | Telemetry | Internal, redacted | Components to monitoring | TLS, RBAC, ingestion controls | Monitoring retention / operations owner |
 
 The implementation MUST document data residency, cross-region or cross-tenant
 transfers, deletion behavior, backup expectations, and whether model providers
@@ -279,14 +358,22 @@ flowchart TD
     audit[Record trace, decisions, and outcome]
     deny[Return safe denial or escalation]
 
-    request --> authorize --> classify --> retrieve --> plan --> policy
-    policy -- No --> deny --> audit
+    request -->|Validate identity| authorize
+    authorize -->|Authorized request| classify
+    classify -->|Trusted scope| retrieve
+    retrieve -->|Eligible evidence| plan
+    plan -->|Proposed bounded steps| policy
+    policy -- No --> deny
+    deny -->|Safe outcome| audit
     policy -- Yes --> approve
     approve -- Yes, pending --> deny
     approve -- Approved or not required --> tool
-    tool --> validate --> model --> safety
+    tool -->|Typed output| validate
+    validate -->|Permitted evidence| model
+    model -->|Draft response| safety
     safety -- Blocked --> deny
-    safety -- Passed --> cite --> audit
+    safety -- Passed --> cite
+    cite -->|Evidence and outcome metadata| audit
 ```
 
 Agent implementations MUST:
@@ -302,6 +389,60 @@ Agent implementations MUST:
   partial execution, and human escalation.
 - Prevent model-generated content from directly becoming executable commands,
   queries, or privileged parameters without validation and policy enforcement.
+
+### 7.1 Compound Requests and A2A
+
+Composed-agent implementations MUST:
+
+- Justify separate agents by capability, ownership, trust boundary or lifecycle;
+  use a simpler internal workflow when another service adds no needed boundary.
+- Use a trusted capability registry and compatible typed contracts. Agent
+  discovery MUST NOT authorize arbitrary endpoints, tools or input parameters.
+- Distinguish protocol functions from orchestration: A2A supports messages,
+  tasks, contexts, references and artifacts; graph scheduling, durable recovery,
+  budgets and application policy still need implementation.
+- Validate proposed decomposition and dependencies deterministically. Bound
+  total task count/depth, concurrency, deadline, tokens/cost and retries; provide
+  a single-capability path and prevent recursive uncontrolled delegation.
+- Correlate each specialist's task/context IDs to a parent operation. Pin
+  compatible configuration/contract/asset releases for coherence without
+  assuming that the same context ID creates shared state across services.
+- Preserve claim-to-source links and document versions through synthesis.
+  Deduplicate citations without discarding provenance. Citation-number validity
+  or raw search scores MUST NOT be presented as proof of factual support.
+- Define authority/version conflict handling, required versus optional steps,
+  explicit partial outcomes, clarification, no evidence, authorization denial,
+  timeout and cancellation. A required failure MUST block dependent guidance;
+  cancellation success and idempotency MUST NOT be assumed from protocol IDs.
+- Append mandatory approved notices deterministically where exact text is
+  required, and keep private reasoning/credentials out of exchanged artifacts.
+
+### 7.2 Retrieval at Scale
+
+Retrieval implementations MUST provide a field dictionary with types,
+search/filter/facet/sort/retrieval attributes, required/null semantics, source of
+truth and owners. It MUST distinguish stable document identity, indexed chunk
+identity, version/section locators, topical relevance, business applicability,
+approval/effective dates and authorization metadata. Tags from other Azure
+services MUST NOT be assumed to populate Search fields without an ingestion map.
+
+The design MUST document candidate retrieval, ranking, deduplication, passage
+selection and final context budget separately. Record why lexical, vector,
+hybrid or semantic options fit the corpus; compatible embeddings and filters
+must be verified, not inferred from index names. Index topology MUST be justified
+by trust, language/analyzers, ownership, lifecycle and measured capacity rather
+than a fixed document count or a separate index for every persona.
+
+Evaluation MUST include relevant-source recall/ranking, passage coverage,
+claim-to-source support, correct versions, abstention and authorization-negative
+cases. Test wrong scope/date, unknown approval, stale ACLs, duplicates,
+contradictory evidence and unanswerable queries. Any authorization or mandatory
+policy leak is a failure, not an acceptable statistical error rate.
+
+Measure chunk counts, index/vector size, query concurrency, latency, cost and
+ingestion/permission lag before selecting capacity. Document metadata backfill,
+schema rebuild, cutover/rollback and parent/child deletion/restore behavior.
+No benchmark or evaluation may be reported complete without its dated evidence.
 
 ## 8. Observability and Traceability
 
@@ -332,6 +473,18 @@ At least one dashboard and the following alerts MUST exist:
 
 Telemetry MUST support tracing a single transaction end to end without exposing
 secrets or unnecessarily storing prompt content.
+
+For composed requests, traces MUST correlate parent and specialist operations,
+route/configuration/contract versions, dependency outcomes, cancellation/retries
+and aggregate usage. Retrieval telemetry SHOULD identify safe source/version
+references, policy decisions, freshness and no-answer reasons without retaining
+document bodies or raw personal questions by default.
+
+Application configuration-change history, provider resource diagnostics and
+request/dependency tracing serve different purposes. A Blob change event or an
+A2A task ID alone does not satisfy end-to-end tracing. A shared service actor
+does not prove human attribution; create-only writes do not prove immutability.
+Record each evidence stream's coverage, failure behavior, retention and owner.
 
 ## 9. Governance Considerations
 
@@ -384,6 +537,19 @@ Manual portal configuration is prohibited unless a service cannot be automated.
 Any exception MUST be documented as a numbered, verifiable step and added to the
 production evolution backlog.
 
+Handoff MUST include a dated evidence register identifying who performed each
+check, the environment/version and its limits. Clearly distinguish mocked tests,
+observed live checks and user-confirmed acceptance. Preserve historical records
+with superseding status updates instead of presenting old constraints as current.
+Configuration-data seeding scripts do not replace resource/role IaC, and a
+successful model response does not establish the rest of the acceptance gates.
+
+For agent composition and large-corpus designs, include versioned capability
+contracts, metadata mappings, representative synthetic/sanitized evaluation
+cases and failure/rollback scenarios. Proposed diagrams and example fields MUST
+be labeled as such; documentary examples MUST NOT trigger provisioning or an
+implicit migration of an existing customer's data or configuration.
+
 ## 11. Production Evolution Path
 
 PoC design MUST avoid blocking production adoption while not prematurely adding
@@ -428,12 +594,20 @@ A PoC architecture is approved only when all applicable items are satisfied:
       deletion.
 - [ ] Agent flow records authorization, tools, guardrails, limits, approvals,
       citations, and failure paths.
+- [ ] Composed agents have approved capability contracts, scoped delegation,
+  bounded dependencies and evidence-preserving synthesis, when applicable.
+- [ ] Retrieval has owned metadata/ACL mappings, chunk lineage, mandatory-scope
+  enforcement, lifecycle tests and a representative quality evaluation.
 - [ ] End-to-end correlation and required dashboards and alerts are operational.
 - [ ] Infrastructure, configuration, test data, smoke tests, and cleanup are
       reproducible from the repository.
 - [ ] Governance owners, policies, budget, expiration, risks, and responsible AI
       controls are documented.
 - [ ] Production evolution requirements and promotion criteria are explicit.
+- [ ] Evidence is dated and attributed; implemented, deployed, user-confirmed,
+  historical and proposed capabilities are not conflated.
+- [ ] Exceptions have accountable approval, review/expiry and exit criteria;
+  unknown owners or unverified controls remain open rather than waived.
 
 ## 13. Microsoft Reference Alignment
 
@@ -450,3 +624,19 @@ Design reviews SHOULD use the current versions of:
 
 Links SHOULD be recorded in the PoC ADRs or design document with the date
 reviewed because service capabilities and guidance evolve.
+
+Additional primary references reviewed for the 2026-09-23 documentation update:
+
+- [A2A 1.0 specification](https://a2a-protocol.org/v1.0.0/specification/):
+  interoperability, discovery, task semantics and per-operation authorization.
+- [Search index schema](https://learn.microsoft.com/en-us/azure/search/search-what-is-an-index)
+  and [index projections](https://learn.microsoft.com/en-us/azure/search/search-how-to-define-index-projections):
+  field attributes, chunk identity and inherited metadata.
+- [Search document-level access](https://learn.microsoft.com/en-us/azure/search/search-document-level-access-overview):
+  GA security filters versus preview native permission integrations at review time.
+- [Search index changes](https://learn.microsoft.com/en-us/azure/search/search-howto-reindex):
+  compatible additions, required backfill and rebuild boundaries.
+
+The [conversational experience design](configurable-conversational-experience.md)
+provides a worked read-only example. It is not proof that those proposed controls
+are implemented in an existing deployment.
