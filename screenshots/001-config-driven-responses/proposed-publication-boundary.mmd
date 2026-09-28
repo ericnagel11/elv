@@ -1,0 +1,50 @@
+---
+config:
+  theme: base
+  htmlLabels: false
+  fontFamily: "Arial, Helvetica, sans-serif"
+  themeCSS: |
+    text { font-family: Arial, Helvetica, sans-serif; }
+    .edgeLabel rect { fill: #ffffff; fill-opacity: 1; opacity: 1; }
+  themeVariables:
+    fontFamily: "Arial, Helvetica, sans-serif"
+    fontSize: "18px"
+    primaryColor: "#ffffff"
+    primaryTextColor: "#172333"
+    primaryBorderColor: "#52677d"
+    lineColor: "#52677d"
+    secondaryColor: "#ffffff"
+    tertiaryColor: "#ffffff"
+    clusterBkg: "#f4f7fb"
+    clusterBorder: "#52677d"
+    edgeLabelBackground: "#ffffff"
+    background: "#ffffff"
+  flowchart:
+    curve: linear
+    nodeSpacing: 36
+    rankSpacing: 48
+    padding: 12
+    wrappingWidth: 260
+    useMaxWidth: false
+---
+flowchart TB
+  subgraph documents["Document publication"]
+    direction TB
+    sources["Content owners<br/>documents + metadata + ACLs"]
+    ingest["Ingestion workload<br/>validate, chunk and map"]
+    review["Quarantine<br/>owner correction"]
+    index["Azure AI Search<br/>published chunks + metadata"]
+    sources -->|"Approved source"| ingest
+    ingest -->|"Invalid metadata"| review
+    ingest -->|"HTTPS + ingestion MI"| index
+  end
+  subgraph instructions["Instruction publication"]
+    direction TB
+    authors["Experience / policy owners<br/>profiles and Prompty"]
+    release["Release pipeline<br/>review, evaluate and version"]
+    config["App Configuration<br/>released profile references"]
+    prompts["Prompty packages<br/>deployed to agents"]
+    authors -->|"Approved change"| release
+    release -->|"HTTPS + publisher MI"| config
+    release -->|"Reviewed deployment"| prompts
+  end

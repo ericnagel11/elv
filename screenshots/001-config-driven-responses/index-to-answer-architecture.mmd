@@ -1,0 +1,61 @@
+---
+config:
+  theme: base
+  htmlLabels: false
+  fontFamily: "Arial, Helvetica, sans-serif"
+  themeCSS: |
+    text { font-family: Arial, Helvetica, sans-serif; }
+    .edgeLabel rect { fill: #ffffff; fill-opacity: 1; opacity: 1; }
+  themeVariables:
+    fontFamily: "Arial, Helvetica, sans-serif"
+    fontSize: "18px"
+    primaryColor: "#ffffff"
+    primaryTextColor: "#172333"
+    primaryBorderColor: "#52677d"
+    lineColor: "#52677d"
+    secondaryColor: "#ffffff"
+    tertiaryColor: "#ffffff"
+    clusterBkg: "#f4f7fb"
+    clusterBorder: "#52677d"
+    edgeLabelBackground: "#ffffff"
+    background: "#ffffff"
+  flowchart:
+    curve: linear
+    nodeSpacing: 36
+    rankSpacing: 48
+    padding: 12
+    wrappingWidth: 260
+    useMaxWidth: false
+---
+flowchart TB
+  request["Streamlit A2A client<br/>question + grounding intent"]
+  settings["Azure App Configuration<br/>experience and knowledge values"]
+  subgraph agent["Current VM agent"]
+    scope["Resolve context binding<br/>validate grounding and index"]
+    query["SearchClient keyword request<br/>question, fields, filter and top"]
+    normalize["Map returned fields<br/>drop empty text, cap excerpts"]
+    usable{"Usable source text?"}
+    render["format_context + Jinja2<br/>render grounded messages"]
+    checks["Handle abstention and<br/>validate inline marker numbers"]
+    scope -->|"Permitted request"| query
+    normalize -->|"Normalized results"| usable
+    usable -->|"Yes"| render
+  end
+  index["Azure AI Search<br/>medical-policies-vector"]
+  asset["Local response.v3.prompty<br/>versioned template, not index content"]
+  model["Azure OpenAI<br/>GPT-4o inference"]
+  rejected["Failed or rejected task<br/>no inference"]
+  empty["no_sources<br/>no inference"]
+  output["A2A artifact to Streamlit<br/>display text, outcome and source summaries"]
+  request -->|"Local A2A message"| scope
+  settings -->|"HTTPS + MI read for a new context"| scope
+  scope -->|"Disabled or invalid scope"| rejected
+  query -->|"HTTPS + runtime managed identity"| index
+  index -->|"Ranked records and selected fields"| normalize
+  query -->|"Invalid query or denied access"| rejected
+  usable -->|"No"| empty
+  asset -->|"Local file read"| render
+  render -->|"HTTPS + MI: question and bounded references"| model
+  model -->|"Completion and usage"| checks
+  checks -->|"Answer or safe no-answer outcome"| output
+  empty -->|"No-model result"| output

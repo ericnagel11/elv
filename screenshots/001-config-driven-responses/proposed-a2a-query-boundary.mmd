@@ -1,0 +1,49 @@
+---
+config:
+  theme: base
+  htmlLabels: false
+  fontFamily: "Arial, Helvetica, sans-serif"
+  themeCSS: |
+    text { font-family: Arial, Helvetica, sans-serif; }
+    .edgeLabel rect { fill: #ffffff; fill-opacity: 1; opacity: 1; }
+  themeVariables:
+    fontFamily: "Arial, Helvetica, sans-serif"
+    fontSize: "18px"
+    primaryColor: "#ffffff"
+    primaryTextColor: "#172333"
+    primaryBorderColor: "#52677d"
+    lineColor: "#52677d"
+    secondaryColor: "#ffffff"
+    tertiaryColor: "#ffffff"
+    clusterBkg: "#f4f7fb"
+    clusterBorder: "#52677d"
+    edgeLabelBackground: "#ffffff"
+    background: "#ffffff"
+  flowchart:
+    curve: linear
+    nodeSpacing: 36
+    rankSpacing: 48
+    padding: 12
+    wrappingWidth: 260
+    useMaxWidth: false
+---
+flowchart TB
+  client["Client"]
+  coordinator["A: Coordinator<br/>Plan and combine<br/>Local synthesis Prompty"]
+  subgraph workers["Independent workers"]
+    appeals["B: Appeal guidance<br/>Own scope + local Prompty"]
+    references["C: Policy and forms<br/>Own scope + local Prompty"]
+    calls(( ))
+    appeals ~~~ calls
+    references ~~~ calls
+  end
+  config["App Configuration<br/>Approved settings"]
+  index["Azure AI Search<br/>Permitted evidence"]
+  model["Azure OpenAI<br/>Draft generation"]
+  client <-->|"1: Question<br/>Return: answer"| coordinator
+  coordinator <-->|"2: A2A subtask<br/>Return: artifact"| appeals
+  coordinator <-->|"2: A2A subtask<br/>Return: artifact"| references
+  calls <-->|"3: Profile request<br/>Return: settings"| config
+  calls <-->|"4: Scoped query<br/>Return: passages"| index
+  calls <-->|"5: Rendered messages<br/>Return: draft"| model
+  style calls fill:#777,stroke:#777

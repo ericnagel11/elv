@@ -321,29 +321,11 @@ The proposed contract accepts an approved semantic capability such as `appeal-pr
 
 These are **proposed mappings**, not additional profiles or tags already present in the current deployment. The corpus assessment must establish that the required metadata and evidence exist.
 
-```mermaid
-sequenceDiagram
-  actor User
-  participant Coordinator
-  participant Worker as Configured response agent
-  participant Config as App Configuration
-  participant Services as Search and OpenAI
-  User->>Coordinator: Compound request<br/>and authenticated context
-  Coordinator->>Coordinator: Validate bounded plan<br/>and clarify scope
-  loop Each approved subtask
-    Coordinator->>Worker: HTTPS A2A + scoped token<br/>capability ID and subquestion
-    Worker->>Worker: Authorize capability<br/>and establish child context
-    Worker->>Config: HTTPS + MI<br/>read approved profile and release
-    Config-->>Worker: Persona, template reference<br/>and knowledge settings
-    Worker->>Services: HTTPS + MI<br/>permitted retrieval and inference
-    Services-->>Worker: Evidence and result
-    Worker-->>Coordinator: Typed artifact and outcome<br/>evidence and release references
-  end
-  Coordinator->>Coordinator: Validate synthesis<br/>and source support
-  Coordinator-->>User: Supported answer<br/>or explicit partial/no-answer outcome
-```
+![Proposed A2A compound-request sequence: a coordinator delegates approved subtasks to the configured response agent and validates the supported result](../screenshots/001-config-driven-responses/a2a-compound-requests.svg)
 
 *Proposed composition of a reusable worker. Independent subtasks may run concurrently within a configured limit; the loop represents the repeated contract, not a requirement for serial execution. A forms subtask can depend on a verified procedure. Search and OpenAI are grouped here only for readability; section 1.1 shows their separate responsibilities.*
+
+[SVG for Word](../screenshots/001-config-driven-responses/a2a-compound-requests.svg) | [Editable Mermaid source](../screenshots/001-config-driven-responses/a2a-compound-requests.mmd)
 
 Create a separate child context for each different profile/scope binding, and preserve it only for follow-ups using that same binding. The existing runtime forbids changing the profile slot of a bound context. The coordinator keeps a parent operation ID and a mapping to child task/context IDs; a shared identifier does not create shared state across services. Pin compatible configuration/asset releases without freezing authorization revocation.
 
@@ -539,40 +521,9 @@ Inline validation currently checks marker presence and source-number range, not 
 
 The following is the **implemented grounded path on the Windows comparison VM**, not the proposed multi-agent design. All processing inside the shaded boundary is one response agent. Azure AI Search queries the already populated index; the agent does not open the original Blob files, run an indexer, or construct embeddings during the request.
 
-```mermaid
-flowchart TB
-  request["Streamlit A2A client<br/>question + grounding intent"]
-  settings["Azure App Configuration<br/>experience and knowledge values"]
-  subgraph agent["Current VM agent"]
-    scope["Resolve context binding<br/>validate grounding and index"]
-    query["SearchClient keyword request<br/>question, fields, filter and top"]
-    normalize["Map returned fields<br/>drop empty text, cap excerpts"]
-    usable{"Usable source text?"}
-    render["format_context + Jinja2<br/>render grounded messages"]
-    checks["Handle abstention and<br/>validate inline marker numbers"]
-    scope -->|"Permitted request"| query
-    normalize -->|"Normalized results"| usable
-    usable -->|"Yes"| render
-  end
-  index["Azure AI Search<br/>medical-policies-vector"]
-  asset["Local response.v3.prompty<br/>versioned template, not index content"]
-  model["Azure OpenAI<br/>GPT-4o inference"]
-  rejected["Failed or rejected task<br/>no inference"]
-  empty["no_sources<br/>no inference"]
-  output["A2A artifact to Streamlit<br/>display text, outcome and source summaries"]
-  request -->|"Local A2A message"| scope
-  settings -->|"HTTPS + MI read for a new context"| scope
-  scope -->|"Disabled or invalid scope"| rejected
-  query -->|"HTTPS + runtime managed identity"| index
-  index -->|"Ranked records and selected fields"| normalize
-  query -->|"Invalid query or denied access"| rejected
-  usable -->|"No"| empty
-  asset -->|"Local file read"| render
-  render -->|"HTTPS + MI: question and bounded references"| model
-  model -->|"Completion and usage"| checks
-  checks -->|"Answer or safe no-answer outcome"| output
-  empty -->|"No-model result"| output
-```
+![Current index-to-answer flow: the Windows VM agent validates scope, retrieves indexed evidence, generates a grounded response and checks its result](../screenshots/001-config-driven-responses/index-to-answer-architecture.svg)
+
+[SVG for Word](../screenshots/001-config-driven-responses/index-to-answer-architecture.svg) | [Editable Mermaid source](../screenshots/001-config-driven-responses/index-to-answer-architecture.mmd)
 
 The diagram separates an A2A failed/rejected task from a successful task carrying `no_sources`; an authorization or query failure is not an empty successful search. SDK transport retries are separate from model generation. The VM does not retry by removing the filter or switching retrieval mode. There is no per-caller document ACL filter in this shared-identity demo.
 
@@ -635,29 +586,9 @@ These are proposed fields, not a renaming of the live schema. The content owner 
 
 The scale pipeline has two distinct planes. **Publication** determines which document versions, metadata and prompt assets become available. **Query execution** lets authorized agents consume those approved releases. Indexing is not something a conversational agent performs because a question needs a better answer.
 
-```mermaid
-flowchart TB
-  subgraph documents["Document publication"]
-    direction TB
-    sources["Content owners<br/>documents + metadata + ACLs"]
-    ingest["Ingestion workload<br/>validate, chunk and map"]
-    review["Quarantine<br/>owner correction"]
-    index["Azure AI Search<br/>published chunks + metadata"]
-    sources -->|"Approved source"| ingest
-    ingest -->|"Invalid metadata"| review
-    ingest -->|"HTTPS + ingestion MI"| index
-  end
-  subgraph instructions["Instruction publication"]
-    direction TB
-    authors["Experience / policy owners<br/>profiles and Prompty"]
-    release["Release pipeline<br/>review, evaluate and version"]
-    config["App Configuration<br/>released profile references"]
-    prompts["Prompty packages<br/>deployed to agents"]
-    authors -->|"Approved change"| release
-    release -->|"HTTPS + publisher MI"| config
-    release -->|"Reviewed deployment"| prompts
-  end
-```
+![Proposed publication flow with separate boundaries for document ingestion and reviewed configuration and prompt releases](../screenshots/001-config-driven-responses/proposed-publication-boundary.svg)
+
+[SVG for Word](../screenshots/001-config-driven-responses/proposed-publication-boundary.svg) | [Editable Mermaid source](../screenshots/001-config-driven-responses/proposed-publication-boundary.mmd)
 
 This is a proposed controlled publication model, not a newly deployed pipeline. Only the publishing/ingestion workloads receive their required write permissions. Approval decisions and ACLs come from accountable source owners, not generated tags. The query-time agents below have no route to publish a profile, edit a prompt file, reclassify a document or rebuild an index.
 
@@ -665,28 +596,9 @@ This is a proposed controlled publication model, not a newly deployed pipeline. 
 
 For a complex appeal question, a coordinator splits the work between **appeal guidance** and **policy/form references**, then combines supported findings into one response. This overview shows five request/response exchanges; each worker makes the service calls independently.
 
-```mermaid
-flowchart TB
-  client["Client"]
-  coordinator["A: Coordinator<br/>Plan and combine<br/>Local synthesis Prompty"]
-  subgraph workers["Independent workers"]
-    appeals["B: Appeal guidance<br/>Own scope + local Prompty"]
-    references["C: Policy and forms<br/>Own scope + local Prompty"]
-    calls(( ))
-    appeals ~~~ calls
-    references ~~~ calls
-  end
-  config["App Configuration<br/>Approved settings"]
-  index["Azure AI Search<br/>Permitted evidence"]
-  model["Azure OpenAI<br/>Draft generation"]
-  client <-->|"1: Question<br/>Return: answer"| coordinator
-  coordinator <-->|"2: A2A subtask<br/>Return: artifact"| appeals
-  coordinator <-->|"2: A2A subtask<br/>Return: artifact"| references
-  calls <-->|"3: Profile request<br/>Return: settings"| config
-  calls <-->|"4: Scoped query<br/>Return: passages"| index
-  calls <-->|"5: Rendered messages<br/>Return: draft"| model
-  style calls fill:#777,stroke:#777
-```
+![Proposed A2A query flow: a coordinator and independent workers use approved settings, permitted evidence and model generation to return supported results](../screenshots/001-config-driven-responses/proposed-a2a-query-boundary.svg)
+
+[SVG for Word](../screenshots/001-config-driven-responses/proposed-a2a-query-boundary.svg) | [Editable Mermaid source](../screenshots/001-config-driven-responses/proposed-a2a-query-boundary.mmd)
 
 **Read each link as request / return.** Each worker reads its profile (3), retrieves permitted evidence (4), then uses its local Prompty and Jinja2 to assemble messages for OpenAI (5). It validates the draft before returning an artifact (2); the coordinator combines and validates the final answer (1). The small dot is a drawing connector: the three service links are drawn once for both workers, not through a shared agent or gateway. **The agents carry data between calls; the Azure services do not call one another.**
 
