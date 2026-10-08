@@ -238,6 +238,7 @@ class ConfiguredResponseRuntime:
             "citation_status": citation_status,
             "profile_slot": binding.profile_slot,
             "configuration_revision": binding.revision,
+            "knowledge_revision": _revision({}, binding.knowledge_scope),
             "prompt_asset": (
                 GROUNDED_ASSET
                 if grounded and knowledge.is_enabled(binding.knowledge_scope)

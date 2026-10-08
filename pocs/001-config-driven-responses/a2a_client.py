@@ -6,6 +6,7 @@ import asyncio
 import os
 
 import httpx
+import evaluation
 from google.protobuf.json_format import MessageToDict
 
 from a2a.client import A2ACardResolver, ClientConfig, create_client
@@ -42,6 +43,7 @@ class ConfiguredAgentClient:
         profile_slot: str,
         grounded: bool = False,
         context_id: str | None = None,
+        evaluation_evidence: bool = False,
     ) -> dict:
         timeout = httpx.Timeout(self.timeout_s)
         async with httpx.AsyncClient(
@@ -66,6 +68,9 @@ class ConfiguredAgentClient:
             message.metadata.update(
                 {"profileSlot": profile_slot, "grounded": grounded}
             )
+            if evaluation_evidence:
+                message.extensions.append(evaluation.EVIDENCE_EXTENSION)
+                message.metadata.update({"evaluationEvidence": True})
             request = SendMessageRequest(message=message)
 
             task = None
@@ -94,6 +99,7 @@ class ConfiguredAgentClient:
 
         answer = ""
         provenance = {}
+        snapshot = None
         for artifact in task.artifacts:
             for part in artifact.parts:
                 content_kind = part.WhichOneof("content")
@@ -101,11 +107,23 @@ class ConfiguredAgentClient:
                     answer = part.text
                 elif content_kind == "data" and part.media_type == RESULT_MEDIA_TYPE:
                     provenance = MessageToDict(part.data)
+                elif evaluation_evidence and content_kind == "data" and part.media_type == evaluation.EVIDENCE_MEDIA_TYPE:
+                    snapshot = MessageToDict(part.data)
 
         if not answer:
             raise A2AClientError("The completed task did not contain a text artifact")
 
+        evidence_result = {}
+        if evaluation_evidence:
+            try:
+                snapshot = evaluation.validate_snapshot(snapshot, question=user_message, profile_slot=profile_slot)
+                if snapshot["task_id"] != task.id or snapshot["context_id"] != task.context_id or snapshot["text"] != answer:
+                    raise ValueError("Mismatched response evidence.")
+            except ValueError:
+                snapshot = None
+            evidence_result["evaluation_evidence"] = snapshot
         return {
+            **evidence_result,
             "task_id": task.id,
             "context_id": task.context_id,
             "profile_slot": provenance.get("profileSlot", profile_slot),
@@ -132,10 +150,11 @@ class ConfiguredAgentClient:
         profile_slot: str,
         grounded: bool = False,
         context_id: str | None = None,
+        evaluation_evidence: bool = False,
     ) -> dict:
         try:
             return asyncio.run(
-                self.invoke_async(user_message, profile_slot, grounded, context_id)
+                self.invoke_async(user_message, profile_slot, grounded, context_id, evaluation_evidence)
             )
         except A2AClientError:
             raise

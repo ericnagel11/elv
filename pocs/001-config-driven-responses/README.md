@@ -43,6 +43,8 @@ Its default remains off for new deployments, and it is not immutable auditing.
   structure and the selected versioned prompt asset.
 - `knowledge:*` selects an existing index/alias, OData scope, result count,
   query mode, citations and whether retrieval is enabled.
+- In opt-in Windows comparison evaluation, `rules:policy` holds independent
+  baseline/candidate advisory rules. Rules change assessment, not response generation.
 - In full-governance mode, a designer edits the draft `candidate`; an approver publishes to
   the production `candidate`. Both prefixes use the same App Configuration RBAC
   boundary. Labels alone do not provide separate store-level authorization.
@@ -134,6 +136,51 @@ administrator steps for future use. Persistent Windows services are not installe
 
 The following draft, persona and history setup applies to the separate full
 governance demo, not the active Windows single-identity comparison.
+
+### Advisory response evaluation on Windows
+
+The optional [evaluation runbook](../../deployment/windows/README.md#advisory-response-evaluation)
+adds **Configuration > Rules** and a separate read-only A2A evaluator. The external
+runtime opt-in `ELV_ENABLE_EVALUATION=true` is **off by default**. Rule authoring also
+requires the existing `ELV_ENABLE_CONFIG_EDITING=true`. This implementation does not
+automatically activate the feature or change stored Azure settings.
+
+Each label has its own `rules:policy` JSON value: schema version, policy enabled state,
+and up to ten named rules with type, severity, criteria and bounded parameters. The
+form supports literal phrases, contextual absolute cost/coverage claims, unsupported
+prior-authorization/referral assurances and evidence-backed fact preservation. First
+Save creates only that policy key/label atomically; later saves use its loaded ETag.
+Rule changes use existing best-effort configuration history when enabled. Generic
+key creation, full-mode mutation permissions and PoC002 are not broadened.
+
+**Presenter workflow:** generate a comparison, add a rule to the selected profile,
+save, then run the same prompt again. The evaluator reads current policies every time,
+even when generation retains a pinned context. Source excerpts are exported only when
+the trusted comparison client explicitly requests the evaluation extension. Normal
+A2A clients still receive only answer/provenance/citation summaries. No raw system
+prompts, Search filters or credentials are exported.
+
+Answers remain visible and unchanged. Findings include severity, exact quotes,
+explanation and source references; provenance includes the policy ETag/hash, response
+task/hash, evaluator asset/deployment, time and separate usage. Missing/disabled/empty
+rules are **not evaluated**, not passes. Absent/truncated evidence, inconsistent scope,
+invalid judgments and outages cannot be reported as complete factual verification.
+Literal rules deliberately match negated/quoted wording; contextual templates use
+the model to distinguish, for example, "coverage is not guaranteed" from a guarantee.
+
+Evaluation uses at most one additional model request for a comparison with eligible
+semantic checks; literal-only/disabled policies use none. It cannot establish member
+coverage or authorization, treat baseline as truth, or discover exclusions never
+retrieved. It does not repair retrieval or rewrite/block responses. Promotion gates,
+authenticated sign-off, shared mandatory production rules and later human-reviewed
+rewrite diffs remain [production work](../../docs/configurable-conversational-experience.md#path-to-production-1).
+Evidence/results stay in process/session memory; restarting loses A2A task history.
+They are not added to configuration history or feedback CSV.
+
+Offline tests exercise contracts and mocked judgments, **not live model accuracy**.
+The accepted scope and implementation record are in
+[the feature specification](../../specs/004-profile-rule-evaluation/spec.md) and
+[validation](../../specs/004-profile-rule-evaluation/validation.md).
 
 ### Runtime boundaries
 

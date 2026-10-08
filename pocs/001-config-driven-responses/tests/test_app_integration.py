@@ -34,6 +34,8 @@ import a2a_client
 import audit
 import change_history
 import config as cfg
+import evaluation
+import evaluation_client
 import experience_runtime
 import hosting
 import rbac
@@ -258,13 +260,19 @@ class AppIntegrationTests(unittest.TestCase):
         return deepcopy(self.scopes[(label, store)])
 
     @staticmethod
-    def _invoke_agent(message, profile_slot, grounded=False, context_id=None):
-        return {
+    def _invoke_agent(message, profile_slot, grounded=False, context_id=None, evaluation_evidence=False):
+        response = {
             "task_id": f"task-{profile_slot}", "context_id": f"context-{profile_slot}",
             "profile_slot": profile_slot, "configuration_revision": "offline-revision",
             "prompt_asset": "response:v1" if profile_slot == "baseline" else "response:v2",
             "result": model_result(),
         }
+        if evaluation_evidence:
+            response["evaluation_evidence"] = evaluation.build_snapshot({
+                **response, "grounded": False, "knowledge_revision": "offline-scope",
+                "found": {"documents": []},
+            }, response["task_id"], response["context_id"], message)
+        return response
 
     def start_app(self):
         app = AppTest.from_file(str(APP_PATH), default_timeout=15)
@@ -320,6 +328,129 @@ class AppIntegrationTests(unittest.TestCase):
         app.session_state["a2a_candidate_context_id"] = "old-candidate"
         app.session_state["history_page"] = (24, "2026-09-21T10:00:00+00:00", change_history.HistoryPage())
         app.session_state["unrelated"] = "keep"
+
+    def enable_advisory(self):
+        os.environ.update({
+            "ELV_HOSTING_MODE": "azure-vm", "ELV_DEMO_MODE": "comparison",
+            "ELV_MI_APP_CLIENT_ID": "00000000-0000-4000-8000-000000000001",
+            "ELV_ENABLE_CONFIG_EDITING": "true", "ELV_ENABLE_EVALUATION": "true",
+        })
+        self.rule_policies = {slot: None for slot in evaluation.PROFILE_SLOTS}
+        self.rule_versions = {slot: None for slot in evaluation.PROFILE_SLOTS}
+
+        def load(label):
+            policy = self.rule_policies[label]
+            return {"policy": deepcopy(policy), "etag": self.rule_versions[label],
+                    "value": evaluation.policy_json(policy) if policy is not None else None,
+                    "revision": evaluation.policy_revision(policy) if policy is not None else None}
+
+        def save(label, policy, expected_etag):
+            self.assertEqual(expected_etag, self.rule_versions[label])
+            self.rule_policies[label] = deepcopy(policy)
+            self.rule_versions[label] = "new-revision"
+            return {**load(label), "audit_warnings": []}
+
+        self.load_rules = self.mock(cfg, "load_rule_policy", side_effect=load)
+        self.save_rules = self.mock(cfg, "save_rule_policy", side_effect=save)
+        self.judge = Mock(side_effect=AssertionError("Unexpected model call"))
+        runtime = evaluation.EvaluationRuntime(load, self.judge)
+        self.evaluator = Mock(spec=evaluation_client.EvaluationClient)
+        self.evaluator.evaluate.side_effect = runtime.evaluate
+        self.mock(evaluation_client, "EvaluationClient", return_value=self.evaluator)
+
+    def test_advisory_add_rule_save_and_regenerate_uses_only_selected_profile(self):
+        self.enable_advisory()
+        app = self.start_app()
+        self.load_rules.assert_not_called()
+        self.click(app, "Generate side-by-side comparison")
+        self.assertIn("rules not configured", self.text(app, "info"))
+        self.widget(app, "selectbox", "Configuration area").set_value("Rules")
+        self.run_app(app)
+        self.widget(app, "selectbox", "Profile").set_value("baseline")
+        self.click(app, "Load rules")
+        self.widget(app, "text_area", "Literal phrases").set_value("Synthetic member-support response")
+        self.click(app, "Save rule to Azure")
+        self.assertEqual(self.save_rules.call_count, 1)
+        self.assertEqual(self.save_rules.call_args.args[0], "baseline")
+        self.assertIsNone(self.rule_policies["candidate"])
+        self.assertNotIn("results", app.session_state)
+        self.assertIn("Saved to Azure: baseline / rules:policy", self.text(app, "success"))
+        self.click(app, "Generate side-by-side comparison")
+        result = app.session_state["results"]["evaluation"]
+        self.assertEqual(result["profiles"]["baseline"]["policy_etag"], "new-revision")
+        self.assertEqual(result["profiles"]["baseline"]["checks"][0]["outcome"], "finding")
+        self.assertEqual(result["profiles"]["candidate"]["state"], "not_configured")
+        self.assertIn("Synthetic member-support response", self.text(app, "text"))
+        self.run_app(app)
+        self.assertEqual(self.evaluator.evaluate.call_count, 2)
+        self.assertEqual(self.agent.invoke.call_count, 4)
+        self.judge.assert_not_called()
+
+    def test_advisory_outage_preserves_both_generated_answers(self):
+        self.enable_advisory()
+        self.evaluator.evaluate.side_effect = evaluation_client.EvaluationClientError("offline")
+        app = self.start_app()
+        self.click(app, "Generate side-by-side comparison")
+        self.assertIn("Generated responses are unchanged", self.text(app, "warning"))
+        for slot in evaluation.PROFILE_SLOTS:
+            self.assertEqual(app.session_state["results"][slot]["text"], model_result()["text"])
+        self.run_app(app)
+        self.evaluator.evaluate.assert_called_once()
+
+    def test_advisory_reads_external_edits_on_next_generation_without_refresh(self):
+        self.enable_advisory()
+        app = self.start_app()
+        self.click(app, "Generate side-by-side comparison")
+        rule = deepcopy(evaluation.RULE_TEMPLATES["literal_phrase"])
+        rule["parameters"]["terms"] = ["Synthetic"]
+        self.rule_policies["candidate"] = {"schema_version": 1, "enabled": True, "rules": [rule]}
+        self.rule_versions["candidate"] = "external-v2"
+        self.click(app, "Generate side-by-side comparison")
+        report = app.session_state["results"]["evaluation"]
+        self.assertEqual(report["profiles"]["candidate"]["policy_etag"], "external-v2")
+        self.assertEqual(report["profiles"]["candidate"]["checks"][0]["outcome"], "finding")
+        self.assertEqual(self.agent.invoke.call_args.kwargs["context_id"], "context-candidate")
+        self.assertTrue(self.agent.invoke.call_args.kwargs["evaluation_evidence"])
+        self.save_rules.assert_not_called()
+
+    def test_rules_reload_discards_unsaved_form_and_profile_switch_requires_load(self):
+        self.enable_advisory()
+        app = self.start_app()
+        self.widget(app, "selectbox", "Configuration area").set_value("Rules")
+        self.run_app(app)
+        self.click(app, "Load rules")
+        original_title = self.widget(app, "text_input", "Rule title").value
+        self.widget(app, "text_input", "Rule title").set_value("unsaved title")
+        self.run_app(app)
+        self.click(app, "Load rules")
+        self.assertEqual(self.widget(app, "text_input", "Rule title").value, original_title)
+        self.widget(app, "selectbox", "Profile").set_value("baseline")
+        self.run_app(app)
+        self.assertFalse(any(widget.label == "Rule title" for widget in app.text_input))
+        self.save_rules.assert_not_called()
+
+    def test_rules_preserve_order_and_support_disable_and_remove(self):
+        self.enable_advisory()
+        first = deepcopy(evaluation.RULE_TEMPLATES["literal_phrase"])
+        second = {**deepcopy(first), "id": "second-rule", "title": "Second rule"}
+        original = {"schema_version": 1, "enabled": True, "rules": [first, second]}
+        self.rule_policies["candidate"] = deepcopy(original)
+        self.rule_versions["candidate"] = "v1"
+        app = self.start_app()
+        self.widget(app, "selectbox", "Configuration area").set_value("Rules")
+        self.run_app(app)
+        self.click(app, "Load rules")
+        self.click(app, "Save rule to Azure")
+        self.assertEqual(self.save_rules.call_args.args[1], original)
+        self.widget(app, "toggle", "Rule enabled").set_value(False)
+        self.click(app, "Save rule to Azure")
+        self.assertFalse(self.rule_policies["candidate"]["rules"][0]["enabled"])
+        self.click(app, "Remove rule from Azure")
+        self.assertEqual([rule["id"] for rule in self.rule_policies["candidate"]["rules"]], ["second-rule"])
+        self.widget(app, "toggle", "Policy enabled").set_value(False)
+        self.click(app, "Save policy state")
+        self.assertFalse(self.rule_policies["candidate"]["enabled"])
+        self.assertIsNone(self.rule_policies["baseline"])
 
     def test_missing_draft_keeps_all_six_search_controls_visible_read_only(self):
         os.environ.pop("AZURE_APPCONFIG_DRAFT_ENDPOINT")

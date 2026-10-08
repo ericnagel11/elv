@@ -59,6 +59,7 @@ CONFIG_KEYS = frozenset({
     "knowledge:industry_field", "knowledge:audience_field", "knowledge:status_field",
     "knowledge:effective_date_field", "knowledge:state_field", "knowledge:source_field",
     "knowledge:search_fields",
+    "rules:policy",
 })
 OPERATIONS = frozenset({
     "save", "set_value", "update", "publish", "publish_draft", "publish_key",

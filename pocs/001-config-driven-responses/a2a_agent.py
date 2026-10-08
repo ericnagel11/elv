@@ -9,7 +9,9 @@ from google.protobuf.json_format import ParseDict
 from google.protobuf.struct_pb2 import Value
 
 import config as cfg
+import evaluation
 import knowledge
+import rbac
 from a2a.helpers import (
     get_message_text,
     new_task_from_user_message,
@@ -38,7 +40,7 @@ RESULT_MEDIA_TYPE = "application/vnd.contoso.experience-result+json"
 MAX_MESSAGE_CHARS = 8_000
 
 _FORBIDDEN_METADATA = frozenset(
-    cfg.EDITABLE_KEYS + cfg.COMPARISON_KNOWLEDGE_KEYS + ["store", "label"]
+    cfg.EDITABLE_KEYS + cfg.COMPARISON_KNOWLEDGE_KEYS + ["store", "label", "rules", "policy", "rules:policy"]
 )
 _LOG = logging.getLogger(__name__)
 
@@ -71,6 +73,13 @@ def build_agent_card(base_url: str) -> AgentCard:
             "metadataFields": ["profileSlot", "grounded"],
         },
     )
+    extensions = [extension]
+    if rbac.evaluation_enabled():
+        extensions.append(AgentExtension(
+            uri=evaluation.EVIDENCE_EXTENSION,
+            description="Opt-in bounded generation evidence for the trusted local advisory evaluator.",
+            required=False, params={"metadataFields": ["evaluationEvidence"]},
+        ))
     return AgentCard(
         name="Configurable Conversational Experience Agent",
         description=(
@@ -83,7 +92,7 @@ def build_agent_card(base_url: str) -> AgentCard:
         capabilities=AgentCapabilities(
             streaming=False,
             push_notifications=False,
-            extensions=[extension],
+            extensions=extensions,
         ),
         supported_interfaces=[
             AgentInterface(
@@ -127,6 +136,11 @@ def parse_request_options(message: Message) -> tuple[str, str, bool]:
     grounded = metadata.get("grounded", False) if uses_extension else False
     if not isinstance(grounded, bool):
         raise ValueError("grounded must be a boolean")
+    evidence = metadata.get("evaluationEvidence", False)
+    if type(evidence) is not bool:
+        raise ValueError("evaluationEvidence must be a boolean")
+    if evidence and (evaluation.EVIDENCE_EXTENSION not in message.extensions or not rbac.evaluation_enabled()):
+        raise ValueError("Evaluation evidence requires its declared extension and runtime opt-in")
     return user_message, profile_slot, grounded
 
 
@@ -195,12 +209,19 @@ class ExperienceAgentExecutor(AgentExecutor):
             await updater.failed(new_text_message("The configured response failed"))
             return
 
+        provenance = _safe_result(bundle)
+        parts = [new_text_part(bundle["result"]["text"], media_type="text/plain")]
+        if dict(context.message.metadata).get("evaluationEvidence", False):
+            try:
+                snapshot = evaluation.build_snapshot(bundle, task.id, task.context_id, user_message)
+                parts.append(Part(data=ParseDict(snapshot, Value()), media_type=evaluation.EVIDENCE_MEDIA_TYPE))
+                provenance["evaluationEvidenceStatus"] = snapshot["evidence_status"]
+            except (ValueError, TypeError, UnicodeError):
+                provenance["evaluationEvidenceStatus"] = "unavailable"
+        parts.append(_result_part(provenance))
         await updater.add_artifact(
             name="Configured response",
-            parts=[
-                new_text_part(bundle["result"]["text"], media_type="text/plain"),
-                _result_part(_safe_result(bundle)),
-            ],
+            parts=parts,
             extensions=[EXPERIENCE_PROFILE_EXTENSION],
         )
         await updater.complete()

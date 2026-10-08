@@ -25,7 +25,8 @@ audit identities, retention controls or the exact Azure role-assignment scope.
 See [the history runbook](#configuration-change-history-in-blob-storage) and
 the dated [validation record](../../specs/003-redhat-vm-hosting/validation.md#history-activation-and-user-acceptance-2026-09-23).
 
-The [launcher](run.py) starts either the Streamlit UI or its internal A2A agent.
+The [launcher](run.py) starts the Streamlit UI, its response A2A agent, or the
+optional advisory evaluator described below.
 It does not install packages, request tokens during validation, change Azure,
 seed configuration, configure services, change firewalls or expose public ports.
 Python 3.10+ is required. The current Windows Server 2025 VM has Python 3.14.7;
@@ -341,6 +342,131 @@ there is no persona selector, governance or audit tab. Grounded comparisons and
 source citations are available only with the explicit RAG setup below. Neither
 mode claims separate-persona role isolation or audit acceptance.
 
+### Advisory response evaluation
+
+**Implemented, default off; live judge quality requires separate acceptance.**
+This is a business-review feature, not a new output blocker or approval workflow.
+Baseline and candidate intentionally may have different evaluation rules.
+
+After approving use of the existing model deployment for additional evaluation
+requests, retain all existing runtime JSON values and add only:
+
+```json
+"ELV_ENABLE_EVALUATION": "true"
+```
+
+Keep `ELV_ENABLE_CONFIG_EDITING="true"` for the Rules form. No new endpoints,
+identities, packages, resources, index writes or permissions are provisioned.
+Rule authoring needs the already-approved App Configuration Data Owner capability;
+the evaluator itself only reads policies and calls the existing model under the same
+runtime identity. A separate process is not independent Azure permission isolation.
+
+Validate the approved external JSON from the repository root without tokens:
+
+```powershell
+& .\pocs\001-config-driven-responses\.venv\Scripts\python.exe .\deployment\windows\run.py --component evaluator --config C:\ProgramData\elv\poc001\runtime.json --approved-azure-host --validate-only
+```
+
+Restart the existing UI and response agent with section 5's commands to load the new
+code and opt-in, then keep a third non-elevated foreground terminal open:
+
+```powershell
+& .\pocs\001-config-driven-responses\.venv\Scripts\python.exe .\deployment\windows\run.py --component evaluator --config C:\ProgramData\elv\poc001\runtime.json --approved-azure-host
+```
+
+The evaluator binds only `127.0.0.1:10000`. Check port availability first; do not stop
+an unrelated listener. Its `/health` and `/.well-known/agent-card.json` must respond;
+health does not verify App Configuration/model access. No firewall or NSG change is
+needed. The launcher overrides inherited evaluation URLs/flags and refuses to start
+this component without the explicit JSON opt-in.
+
+#### Add a rule and demonstrate its effect
+
+1. Generate a synthetic comparison. A profile with no stored policy shows
+   **Not evaluated: rules not configured**, not a green pass.
+2. Open **Configuration**, select **Rules**, choose **baseline** or **candidate**,
+   and select **Load rules**. Opening/selecting the tab never writes a policy.
+3. Choose **Add a rule** and a template. Edit its ID, title, criteria, enabled state
+   and high/medium/low severity. Literal rules accept one phrase per line and
+   phrase/substring matching; they are not contextual rules or regular expressions.
+4. Select **Save rule to Azure**. The first explicit save uses atomic create-only for
+   the selected `rules:policy` key/label. A concurrent creation/update conflicts rather
+   than overwriting. Later saves require the loaded ETag; reload after a conflict.
+   **Save policy state** can disable a whole policy; **Remove rule from Azure** removes
+   only the selected item from that policy, not an arbitrary App Configuration key.
+5. Return to the comparison and run the same prompt again. Inspect findings, exact
+   wording, severity, explanation and **Rules used** revision. The other profile's
+   policy stays unchanged. No restart or saved-answer replay is required for rule edits.
+
+Supported examples are unconditional "100% covered at no cost" claims, unsupported
+"no prior authorization/referral needed" assertions, and simplification of a supported
+"$50 after deductible" to "$50" or loss of relevant limits/exclusions. Contextual checks
+distinguish negation/conditional language; literal phrase rules intentionally do not.
+Baseline facts must themselves be source-supported and scope-compatible before the
+candidate is compared with them. The PoC has no authoritative member/CPT/site/provider
+determination service, and generic policy text is not such a determination.
+
+The same prompt may produce different text on the next generation. Adding an
+evaluation rule does **not** instruct generation to change its wording. Do not weaken
+the existing safety prompts to manufacture a risky answer or present a newly safe
+answer as proof of evaluator detection. The fixed-response offline fixtures establish
+rule behavior reproducibly; approved live samples assess actual model quality.
+
+#### Contract, freshness and operating limits
+
+- One schema-v1 JSON value per label; no default-label fallback or shared-rule
+  inheritance. Limits: ten rules and 8192 serialized UTF-8 bytes per policy; existing
+  experience/knowledge limits stay unchanged. IDs/types/fields/parameters are validated.
+  Malformed stored policies require correction, not silent replacement with defaults.
+- Current rules are loaded independently for each evaluation request, without a rules
+  value cache or stale fallback. Direct portal edits also affect the next comparison.
+  Each policy is frozen for that evaluation and identified by ETag/hash; reads of two
+  different labels are not a cross-profile transaction. Generation contexts still pin
+  experience/knowledge until refresh, so their revision is reported separately.
+- A declared, feature-gated response extension exports exact bounded excerpts used in
+  generation, with source order/hashes/truncation. Default callers receive no new source
+  bodies. The UI passes snapshots to the evaluator; it does not re-query Search, follow
+  source URLs, send arbitrary rules or retrieve outside the original approved scope.
+- There are at most twenty sources per profile, each at most 2500 characters, and
+  16,000 response characters. The semantic input budget is 96 KiB; oversized input is
+  not silently cropped. Valid literal findings remain while semantic checks report
+  incomplete/unavailable. Missing excerpts, conflicting applicability and truncation
+  cannot establish complete factual support; never-retrieved exclusions are invisible.
+- At most one additional semantic model call per comparison, batched across eligible
+  rules/profiles, with a 6000-output-token ceiling, 35-second SDK timeout and no model
+  retries/repair loop. No active semantic checks means no judge call. Token usage is
+  separate from the two generation calls; failed calls may still consume quota.
+  The evaluator task waits at most 75 seconds and its client 90 seconds. Thread/SDK
+  cancellation does not guarantee immediate termination of an in-flight token/request.
+- Semantic evaluation requires strict structured-output support from the deployed
+  model/API (live-verified with GPT-4o 2024-11-20 and API 2024-10-21). The output schema
+  permits only requested rule/profile IDs and supplied passage IDs. The application
+  copies original text for displayed quotations, rather than trusting generated quote
+  strings. These passages retain the existing bounded excerpts; no further Search
+  retrieval is performed. Unsupported structured output fails visibly; no silent fallback.
+- Semantic failures show a safe stage code such as `model_request`, `output_schema`
+  or `rule_evidence`. A stage identifies request/validation failure, not a confirmed
+  business-rule violation. Raw judgments and service errors are not written to logs.
+  Model request failures additionally distinguish `model_rate_limit` (HTTP 429),
+  `model_timeout`, `model_connection`, identity denials, missing deployment, rejected
+  requests and service failures. Respect numeric cooldown guidance when supplied;
+  repeated Generate clicks add two response calls plus eligible evaluation usage to
+  the shared deployment. No automatic retry, timeout increase or quota change is made.
+  A successful later attempt does not identify the cause of an earlier failure.
+- UI/tab/feedback reruns make no new evaluation call. An evaluator outage leaves the
+  generated answers visible. No extra blocking, rewriting, sign-off or promotion step.
+- Evaluation requests, source snapshots and findings are kept only in session/process
+  memory, including the A2A in-memory task store until restart. Trusted local callers
+  share that boundary; there is no per-user task authorization or durable audit/expiry
+  service. Do not enter PHI/secrets in questions, criteria or evidence.
+- Existing Blob history can record app-mediated rule configuration changes only.
+  It never receives evaluation prompts, source excerpts or answers. Direct portal
+  edits are outside this application history. History failures do not repeat saves.
+
+To deactivate, set `ELV_ENABLE_EVALUATION` to `"false"`, restart UI/response agent,
+and stop the evaluator terminal. Stored rules remain; generation settings are unchanged.
+Full-governance mode and PoC002 do not gain evaluation behavior through this feature.
+
 ### Edit live configuration from the UI
 
 With `ELV_ENABLE_CONFIG_EDITING=true`, the app shows **Experience comparison**
@@ -370,9 +496,10 @@ changes the selected profile in the production store.
   pinned contexts. Saving alone does not invoke the model.
 
 All trusted VM users share this configuration and identity; it is not per-user
-Azure authorization. Generic writes, new keys, deletion, other labels/prefixes,
+Azure authorization. Generic writes, new experience/knowledge keys, deletion, other labels/prefixes,
 Search index/document writes, persona auditing and draft publishing are not exposed by this
-editor. No Azure values are automatically changed by enabling or starting it.
+editor. The opt-in Rules form has only the explicit fixed-key creation exception
+described above. No Azure values are automatically changed by enabling or starting it.
 
 ### Grouped Search controls on the VM
 

@@ -85,14 +85,24 @@ def completion_parameters(parameters: dict) -> dict:
     return {"extra_body": extra_body}
 
 
-def generate_response(asset_id: str, inputs: dict) -> dict:
+def generate_response(asset_id: str, inputs: dict, *, timeout_s=None, max_retries=None, response_format=None) -> dict:
     front_matter, body = _load_asset(asset_id)
     parameters = (front_matter.get("model") or {}).get("parameters") or {}
     messages = render_messages(body, inputs)
     request_parameters = completion_parameters(parameters)
+    if response_format is not None:
+        request_parameters["response_format"] = response_format
 
     started = time.perf_counter()
-    response = _aoai_client().chat.completions.create(
+    client = _aoai_client()
+    options = {}
+    if timeout_s is not None:
+        options["timeout"] = timeout_s
+    if max_retries is not None:
+        options["max_retries"] = max_retries
+    if options:
+        client = client.with_options(**options)
+    response = client.chat.completions.create(
         model=os.environ["AZURE_OPENAI_DEPLOYMENT"],
         messages=messages,
         **request_parameters,
@@ -110,4 +120,5 @@ def generate_response(asset_id: str, inputs: dict) -> dict:
         "prompt_tokens": usage.prompt_tokens if usage else None,
         "completion_tokens": usage.completion_tokens if usage else None,
         "reasoning_tokens": getattr(details, "reasoning_tokens", None) if details else None,
+        "model": getattr(response, "model", None),
     }

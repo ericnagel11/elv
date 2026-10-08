@@ -1,6 +1,6 @@
 # Configurable Conversational Experience
 
-*A technical executive perspective on configurable AI experiences, informed by the PoC. Narrative revised 2026-09-24; implementation evidence through 2026-09-23.*
+*A technical executive perspective on configurable AI experiences, informed by the PoC. Advisory-evaluation implementation update 2026-10-07; prior live acceptance through 2026-09-23 is distinguished from new offline evidence.*
 
 **Covers:** AI-WP-001 (externalizing conversational personas), AI-WP-002 (managing tone, verbosity, and reading level through configuration), and the customer note on regionality and language barriers.
 
@@ -19,6 +19,7 @@ The paper uses healthcare member-support guidance as its primary example: explai
 | Evidence level | What it supports | What it does not establish |
 |---|---|---|
 | Working PoC001 | Configuration-driven comparisons, one A2A response service, approved existing-index keyword retrieval, and user-confirmed configuration history save/readback | Production access isolation, corpus-wide answer quality, scalable operations or measured customer benefit |
+| Advisory evaluation implementation (2026-10-07) | Independent profile rule policies, Rules authoring, opt-in A2A evidence/evaluation and offline workflow/contract tests | Live judge accuracy, production enforcement, authoritative member determinations or completed retrieval coverage |
 | PoC002 implementation | A concrete approach to layered market configuration, localized assets and disclosures | A confirmed live deployment or measured multilingual quality |
 | Proposed extensions | A design for compound requests, large-corpus retrieval and controlled experimentation | Implemented multi-agent orchestration, assessed metadata quality or production acceptance |
 
@@ -49,13 +50,14 @@ The design separates **configuration**, **instructions**, and **execution**. Azu
 
 #### What is captured in a profile?
 
-In PoC001, a profile is a set of key-values selected by an App Configuration label, not a separate Azure resource. The same key can have a `baseline` value and a `candidate` value. Two key groups describe the response:
+In PoC001, a profile is a set of key-values selected by an App Configuration label, not a separate Azure resource. The same key can have a `baseline` value and a `candidate` value. Experience and knowledge describe generation; an optional rules category describes subsequent assessment:
 
 | Group | Current configuration values | Responsibility |
 |---|---|---|
 | Experience | `experience:persona`, `experience:tone`, `experience:verbosity`, `experience:reading_level`, `experience:response_structure`, `experience:prompt_asset` | Who the assistant presents itself as, how it speaks, and which deployed ungrounded template it uses |
 | Knowledge policy | `knowledge:enabled`, `knowledge:index`, `knowledge:filter`, `knowledge:top_k`, `knowledge:query_mode`, `knowledge:citation_style` | Whether retrieval is enabled, where and how to search, evidence count and citation instructions |
 | Existing-index mapping | `knowledge:title_field`, `knowledge:content_field`, `knowledge:url_field`, `knowledge:industry_field`, `knowledge:audience_field`, `knowledge:status_field`, `knowledge:effective_date_field`, `knowledge:state_field`, `knowledge:source_field`, `knowledge:search_fields` | Map an existing Search schema into the runtime without pretending that missing sample fields exist |
+| Advisory evaluation (opt-in) | `rules:policy` JSON independently labeled baseline/candidate: schema, enabled state, rule IDs, type, severity, criteria and parameters | Evaluate returned wording; does not alter generation or authorize publication |
 
 The mapping group was needed because the existing index uses fields such as `Title` and `Content`, not the sample schema. Optional unavailable fields can remain unmapped. The current VM accepts only approved indexes and simple keyword search; adding a configuration value does not implement a new query strategy.
 
@@ -169,6 +171,7 @@ Make experience changes observable and reviewable, not merely configurable. **AI
 2. Rendered the same member question twice and displayed response text, readability indicators, latency, token usage and provenance together.
 3. Added explicit load/save controls for existing live settings on the VM. Saves use the loaded ETag to detect concurrent edits, and successful saves clear the current UI's cached results and comparison contexts.
 4. Added preference capture and configuration history. The user confirmed history save/readback; no population-level satisfaction improvement was measured.
+5. Implemented opt-in advisory evaluation with separate baseline/candidate rule policies and a **Configuration > Rules** form. The demonstration is **generate, add a rule to one profile, save, run the same prompt again**. The evaluator reads current rules and shows findings without changing the returned answer. This extension has offline implementation evidence, not accepted live judge accuracy.
 
 ### Architecture and decisions
 
@@ -180,13 +183,33 @@ An **ETag** is the version identifier returned by App Configuration for a settin
 
 For example, changing `candidate` reading level from grade 9 to grade 6 changes a rendered instruction in a fresh context. It does not change the model deployment or its token limit. The output budget is controlled separately by the asset/runtime request contract. Testing should determine whether simplification preserved supported facts and necessary qualifications, not just whether the readability score fell.
 
+#### Configurable advisory evaluation
+
+Rules are business-owned assessment data, not additions to the response-generation prompt. Each profile's `rules:policy` is one bounded JSON document, saved atomically at the individual key/label boundary. First creation is conditional; subsequent saves use ETags. The form adds, edits, disables or removes rule items and records supported configuration changes through the existing best-effort history. New supported wording/criteria needs a configuration save; a new evaluation mechanism or deployed judge prompt still needs engineering and deployment.
+
+| Scenario | Implemented assessment | Important limit |
+|---|---|---|
+| Absolute cost/coverage | Literal phrases or a contextual rule for unconditional assurances such as "100% covered at no cost"; contextual judging distinguishes negation and conditional wording | A phrase match alone cannot establish a false claim; "coverage is not guaranteed" must not be treated as a guarantee by the contextual rule |
+| Prior authorization/referrals | Flag categorical "not required" assertions without applicable positive support | The demo has no member/CPT/site/provider determination service; missing data and generic policy are not an individual determination |
+| Simplification drift | Check evidence-backed costs, units, deductibles, conditions, exclusions and limits; optionally compare supported baseline facts with candidate under compatible scopes | Baseline is not truth. "$50 after deductible" cannot be validated as "$50" merely because the shorter answer reads better |
+
+Streamlit sends the newly generated pair and their opt-in evidence snapshots to a separate read-only A2A evaluator. Deterministic literal checks run locally; eligible contextual checks share at most one bounded call to the existing Azure OpenAI deployment through a fixed evaluation Prompty asset. The evaluator loads each profile's current policy independently, not the UI's cached profile values. Source quotations, response spans, rule IDs, structured outcomes and task/hash correlation are validated before findings are displayed. Hashes identify inputs; they do not authenticate an untrusted caller.
+
+Findings show high/medium/low severity, quoted wording, a concise explanation and source references. Missing/disabled/empty policies are not evaluated, not passes. Unknown applicability, missing or truncated evidence, malformed judgments and outages remain explicit. Answers stay visible during evaluation and after its failure. Rule revisions and judge usage are shown separately from generation. A model-based assessment can still be wrong; quote validation is not semantic proof, and the offline suite uses synthetic/mocked judgments rather than certifying model quality.
+
+The presenter may intentionally use different rules for each profile and add a rule after observing undesired wording. Re-running creates a new answer, which may differ naturally; a changed answer alone does not prove the rule's effect. Do not weaken generation safeguards to force the demonstration. Fixed-response tests establish the add-rule behavior, while a reviewed live evaluation set must measure actual false positives and negatives.
+
+The evaluator sees bounded generation excerpts, not the entire index. It can flag missing qualifications that are present in available evidence, but cannot discover an exclusion that retrieval or a context cutoff omitted. Preventing that loss requires a retrieval design with protected required facts, parent/section expansion, applicability metadata and recall tests. No index, ranking or chunking redesign is implied by adding an advisory evaluator.
+
 ### Path to production
 
 1. **Define an authored profile schema.** Set supported values, lengths and combinations for persona/style/structure and allowed template references. Assign an experience owner and validate the whole proposed release, not only individual text fields.
 2. **Build a repeatable evaluation set.** Include short, compound, ambiguous and unanswerable questions, supported policy constraints, reading-level expectations and unsafe instructions. Keep corpus/model versions fixed when comparing a style change, and record any intended difference in retrieval scope.
-3. **Automate and review the checks.** Test template rendering and version conflicts offline; run approved model evaluations repeatedly for fact preservation, citation support, style, refusal, latency and token cost. Human review assesses empathy and comprehension. These are evaluation workflows to build, not guaranteed outputs of the profile settings.
+3. **Calibrate and extend the advisory checks.** Retain the implemented schema, phrase, evidence and failure checks; run approved model evaluations repeatedly for fact preservation, citation support, style, refusal, latency and token cost. Measure false positives/negatives against a reviewed golden set and independent human judgment. Offline contract success does not establish judge quality or guaranteed output safety.
 4. **Publish and observe under control.** Store the chosen profile/asset release and evaluation evidence, require approval, and use the release/refresh mechanism from section 1.1. Monitor live quality with privacy-safe sampling and a defined owner rather than logging every question by default.
 5. **Define the revert decision.** Set promotion and regression thresholds before rollout. Retain the prior compatible release, exercise rollback across replicas and sessions, and distinguish a content/security withdrawal from a routine tone adjustment.
+
+Production can map policy outcomes to **Block** (prevent promotion for specified failures) or **Warn** (require an authenticated sign-off), with immutable references to the evaluated profile, rules, prompts, model and evidence release. Neither gate is implemented in the Windows demo. A later remediation feature may propose replacement wording, display a before/after diff and require human acceptance plus re-evaluation. Accepting one edited answer does not update configuration or guarantee future answers; profile remediation must be authored, saved and tested separately. Mandatory production safety policies must remain common across variants even when additional experimental assessment rules differ.
 
 **Production decision:** what result justifies promotion? A preferred answer in a demonstration supports design review; it is not yet evidence of improved customer service.
 
@@ -260,7 +283,7 @@ Make the configured response capability available to more than one user interfac
 3. Moved profile resolution, optional Search retrieval, prompt rendering and model calls behind that boundary.
 4. Returned the answer or a safe no-answer outcome as a task artifact, with configuration revision, source summaries, latency and usage. Streamlit displays one task per comparison profile.
 
-**Result:** the UI can consume the response capability without implementing its Azure or prompt logic. The PoC has one runtime agent, not two collaborating agents because two columns are displayed.
+**Result:** the UI consumes one response-generation agent for both columns. The optional evaluation extension adds a distinct advisory A2A agent; it is not a compound-request coordinator and does not generate replacement member answers.
 
 ### Architecture and decisions
 
@@ -280,6 +303,10 @@ A2A defines communication, discovery and task semantics; it does not supply auth
 An **Agent Card** is the service's capability description: supported skills, interface and protocol version, media types and advertised optional features. A **Message** carries a request; a **Task** records its execution state; an **Artifact** carries the output. This vocabulary makes another A2A-compatible caller possible without exposing the worker's internal prompt or Azure configuration layout. It does not make an untrusted Agent Card a trusted endpoint.
 
 Today the extension carries `profileSlot` and `grounded`. The slot is limited to `baseline` or `candidate`; raw `persona`, `prompt_asset`, `filter`, `store` and label overrides are rejected. The task returns display text plus safe configuration/source/usage metadata, not a configuration bundle. Deployment endpoints and credentials remain inside the service.
+
+With `ELV_ENABLE_EVALUATION=true`, a separately declared evidence extension can export the exact bounded excerpts used for generation, including source IDs, hashes and truncation flags. This deliberately extends only the trusted opt-in contract; ordinary response clients still receive no source bodies or rendered prompts. The UI forwards correlated response snapshots to the evaluator on localhost port 10000. That agent reads profile rules and calls the existing model; it never fetches arbitrary source URLs or executes rules as code. Findings return in a versioned artifact, independently of the original response artifact. The architecture image above remains the generation path, not a diagram of this additional assessment route.
+
+Both agents share the current trusted VM boundary and workload identity. A separate local process does not create least-privilege isolation, authenticated task ownership or durable audit. Evidence and findings remain in in-memory A2A task/session state until restart; configuration history records rule edits, not evaluation bodies. Production must define authorization, task expiry, approved evidence audiences and retention before exposing these endpoints to additional callers.
 
 ### Path to production
 
@@ -395,6 +422,8 @@ Control when a published change reaches customers without changing the assistant
 
 The explicit refresh makes cause and effect visible during a demonstration. Other sessions keep their existing bindings until refreshed; the implementation is not a distributed rollout or emergency withdrawal system.
 
+Evaluation policy has a deliberately different lifetime: each requested evaluation reads current `rules:policy` values, freezes those two individual revisions for that run, and never falls back to cached rules. A portal edit therefore affects the next comparison's evaluation without replacing its generation context. Rule saves through the UI clear that session's old comparison; ordinary widget reruns do not evaluate again. Cross-profile policy reads are not a transaction, and no previous-answer replay workflow is implemented.
+
 ### Architecture and decisions
 
 Session binding prevents ordinary edits from changing a profile between tasks. It does not make the initial multi-key read atomic or freeze prompt-file contents, model deployments or Search documents. The configuration revision is therefore useful provenance, not a complete release identity.
@@ -482,6 +511,7 @@ Determine whether a reviewed experience change improves customer outcomes, rathe
 1. Created baseline/candidate profiles and a common question for paired comparison.
 2. Displayed response characteristics, usage and latency, and provided local preference capture.
 3. Kept configuration provenance visible so a reviewer can relate a response to its selected profile.
+4. Added independently configurable advisory rule sets to support the presenter-led add-rule/regenerate scenario. Differences are visible through rule revisions; findings do not implement customer assignment or promotion.
 
 The PoC supports qualitative design review. **Randomized customer assignment, outcome telemetry and statistical analysis are not implemented or demonstrated.**
 
@@ -754,7 +784,7 @@ Turn the working configuration-driven response into an accountable service with 
 
 ### PoC work
 
-The reusable foundation consists of profile contracts, versioned prompts, one A2A response interface, an existing-index retrieval adapter, comparison tools and configuration history. The work also identified decisions deliberately deferred for a presenter-operated VM: shared identity, direct live editing, in-memory contexts, limited citation validation and unmeasured corpus quality.
+The reusable foundation consists of profile contracts, versioned prompts, one A2A response interface, an optional advisory evaluator, an existing-index retrieval adapter, comparison tools and configuration history. The work also identified decisions deliberately deferred for a presenter-operated VM: shared identity, direct live editing, in-memory contexts, limited citation validation, uncalibrated judge quality and unmeasured corpus coverage.
 
 The next investment should close those foundational gaps before multiplying users, markets or agents. Regional and compound-request designs can then build on an authenticated, observable service rather than multiply an unverified deployment.
 
@@ -767,7 +797,7 @@ Keep the configuration-first design while separating the following responsibilit
 | Author and publish | Profiles, prompt assets and explicit comparison | Authenticated authors, evaluation/approval gates, compatible releases and withdrawal | App Configuration plus a reviewed deployment pipeline or workflow and versioned asset storage |
 | Serve and authorize | Reusable A2A contract and managed service authentication | Managed hosting, caller authorization, independent workload scope, durable state and execution limits | App Service or Container Apps, Entra ID, API Management where gateway policy is needed |
 | Publish and retrieve knowledge | Query adapter and selectable retrieval scope | Owned metadata, source permissions, ingest/lifecycle controls and evaluated ranking | Azure AI Search and governed source storage, with supported enrichment only where justified |
-| Evaluate and operate | Provenance, usage indicators and change history | Quality baselines, correlated traces, alerts, retention, recovery and cost accountability | Azure Monitor/Application Insights and a supported evaluation platform or test harness |
+| Evaluate and operate | Advisory profile rules, bounded evidence contracts, findings, usage indicators and configuration history | Calibrated quality baselines, mandatory shared policies, authenticated gates, correlated traces, retention and cost accountability | Existing evaluator plus a supported evaluation platform/test harness; Azure Monitor/Application Insights for operations |
 
 These are responsibility-led choices, not a requirement to deploy every listed product. Existing platform services may satisfy them. Check the exact feature/API, region and GA status before selection. Secrets, if any remain necessary, belong in an approved secret store, not profile values. The release contract must connect configuration, prompt, model/request and retrieval versions while preserving independent entitlement revocation and content withdrawal.
 
@@ -841,14 +871,15 @@ Azure resource tags, Blob metadata, Blob index tags, App Configuration tags and 
 
 ## Appendix B: Evidence and implementation references
 
-Evidence is dated through **2026-09-23**. This 2026-09-24 editorial revision adds no live deployment, inference or application-test results. The current VM and historical full-governance environment are distinct scopes.
+Prior live acceptance is dated through **2026-09-23**. The **2026-10-07** advisory-evaluation change adds implementation and offline test evidence, not live judge-quality acceptance. The current VM and historical full-governance environment are distinct scopes. See the [evaluation validation record](../specs/004-profile-rule-evaluation/validation.md) for activation and verification status.
 
 | Capability | Recorded evidence | Boundary |
 |---|---|---|
 | PoC001 comparison | Live generation user-confirmed; local UI and A2A agent deployed on Windows | Shared identity/foreground hosting, not authenticated production service |
 | Existing-index RAG | Approved bounded keyword comparison observed on 2026-09-18 | No corpus-wide relevance, vector/hybrid or per-user access evaluation |
 | Configuration history | Private container/activation observed on 2026-09-22; save/readback user-confirmed on 2026-09-23 | Best-effort app events, not human attribution or immutable audit |
-| Citation/no-answer handling | Deployed on 2026-09-22; latest recorded PoC suite passed 276 offline tests | Marker syntax and exact abstention, not semantic claim verification; no suite rerun for this revision |
+| Citation/no-answer handling | Deployed on 2026-09-22; retained in the 2026-10-07 offline regression run | Marker syntax and exact abstention, not semantic claim verification |
+| Advisory evaluation | Implemented 2026-10-07; 316 PoC001 and 10 shared-hosting offline tests passed, with synthetic browser workflow/layout checks | Opt-in deployment and live model-quality acceptance are separate; no production blocking, promotion or rewrite workflow |
 | Full governance | Retained code and historical separate-store/role demonstrations | Not the identity model running on the current VM |
 | PoC002 regional experience | Layered profiles, localized assets, gates, disclosures and language checks implemented | Live end-to-end verification and multilingual quality remain unconfirmed |
 | Compound requests, scaled retrieval and measured A/B | Proposed contracts and work described here | Not implemented or benchmarked through documentation changes |

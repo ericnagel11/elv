@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 import audit
 import config as cfg
+import evaluation
 import hosting
 import prompt
 import rbac
@@ -152,6 +153,94 @@ class ComparisonOperationTests(unittest.TestCase):
             client.assert_not_called()
 
 
+class RuleConfigurationTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.dict(os.environ, {
+            **COMPARISON_ENV, "ELV_ENABLE_EVALUATION": "true", "ELV_ENABLE_CONFIG_EDITING": "true",
+        }, clear=True))
+        self.client = self.enterContext(patch.object(cfg, "_client")).return_value
+        self.policy = {"schema_version": 1, "enabled": True, "rules": []}
+        self.value = evaluation.policy_json(self.policy)
+
+    def test_opt_in_is_strict_and_off_by_default(self):
+        os.environ.pop("ELV_ENABLE_EVALUATION")
+        self.assertFalse(rbac.evaluation_enabled())
+        with self.assertRaises(rbac.OperationDisabled):
+            cfg.load_rule_policy("baseline")
+        self.client.get_configuration_setting.assert_not_called()
+        os.environ["ELV_ENABLE_EVALUATION"] = "TRUE"
+        with self.assertRaises(ValueError):
+            rbac.evaluation_enabled()
+
+    def test_read_is_exact_fresh_and_missing_is_not_an_empty_policy(self):
+        from azure.core.exceptions import ResourceNotFoundError
+
+        self.client.get_configuration_setting.side_effect = [
+            ResourceNotFoundError(), SimpleNamespace(value=self.value, etag="new"),
+        ]
+        self.assertIsNone(cfg.load_rule_policy("baseline")["policy"])
+        self.assertEqual(cfg.load_rule_policy("baseline")["etag"], "new")
+        self.assertEqual(self.client.get_configuration_setting.call_count, 2)
+        self.assertEqual(self.client.get_configuration_setting.call_args.kwargs["label"], "baseline")
+        self.assertEqual(self.client.get_configuration_setting.call_args.kwargs["key"], "rules:policy")
+        self.client.list_configuration_settings.assert_not_called()
+
+    def test_first_save_is_create_only_and_conflict_does_not_overwrite(self):
+        from azure.core.exceptions import ResourceExistsError
+
+        self.client.add_configuration_setting.return_value = SimpleNamespace(value=self.value, etag="created")
+        self.assertEqual(cfg.save_rule_policy("baseline", self.policy, None)["etag"], "created")
+        setting = self.client.add_configuration_setting.call_args.args[0]
+        self.assertEqual((setting.key, setting.label), ("rules:policy", "baseline"))
+        self.client.add_configuration_setting.side_effect = ResourceExistsError()
+        with self.assertRaises(cfg.ConfigurationConflict):
+            cfg.save_rule_policy("baseline", self.policy, None)
+        self.client.set_configuration_setting.assert_not_called()
+
+    def test_update_uses_etag_preserves_metadata_and_noop(self):
+        current = SimpleNamespace(value=self.value, etag="v1", tags={"owner": "demo"})
+        self.client.get_configuration_setting.return_value = current
+        self.assertEqual(cfg.save_rule_policy("candidate", self.policy, "v1")["etag"], "v1")
+        self.client.set_configuration_setting.assert_not_called()
+        changed = {**self.policy, "enabled": False}
+        self.client.set_configuration_setting.return_value = SimpleNamespace(
+            value=evaluation.policy_json(changed), etag="v2",
+        )
+        self.assertEqual(cfg.save_rule_policy("candidate", changed, "v1")["etag"], "v2")
+        self.assertEqual(self.client.set_configuration_setting.call_args.kwargs["etag"], "v1")
+        self.assertEqual(self.client.set_configuration_setting.call_args.args[0].tags, {"owner": "demo"})
+        with self.assertRaises(cfg.ConfigurationConflict):
+            cfg.save_rule_policy("candidate", self.policy, "stale")
+
+    def test_writes_require_editing_and_labels_cannot_widen(self):
+        for label in (None, "", "other", "*"):
+            with self.subTest(label=label), self.assertRaises(rbac.OperationDisabled):
+                cfg.save_rule_policy(label, self.policy, None)
+        os.environ["ELV_ENABLE_CONFIG_EDITING"] = "false"
+        with self.assertRaises(rbac.OperationDisabled):
+            cfg.save_rule_policy("baseline", self.policy, None)
+        self.client.add_configuration_setting.assert_not_called()
+        self.assertNotIn("rules:policy", cfg.FULL_DEMO_KEYS)
+        with self.assertRaises(rbac.OperationDisabled):
+            cfg.load_profile("baseline", persona="app", prefix="rules:")
+
+    def test_history_failure_does_not_repeat_successful_create(self):
+        os.environ["ELV_ENABLE_CONFIG_HISTORY"] = "true"
+        self.client.add_configuration_setting.return_value = SimpleNamespace(value=self.value, etag="created")
+        with patch.object(cfg.change_history, "record_event", side_effect=RuntimeError("offline")):
+            saved = cfg.save_rule_policy("baseline", self.policy, None)
+        self.assertEqual(saved["etag"], "created")
+        self.assertTrue(saved["audit_warnings"])
+        self.client.add_configuration_setting.assert_called_once()
+
+    def test_malformed_existing_policy_is_not_reported_as_missing(self):
+        for value in (None, "", "not json", '{"schema_version":1,"enabled":true,"rules":[],"unexpected":true}'):
+            self.client.get_configuration_setting.return_value = SimpleNamespace(value=value, etag="exists")
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                cfg.load_rule_policy("baseline")
+        self.client.add_configuration_setting.assert_not_called()
+
+
 class OpenAIRequestProfileTests(unittest.TestCase):
     def setUp(self):
         environment = patch.dict(os.environ, {"AZURE_OPENAI_DEPLOYMENT": "existing-deployment"}, clear=True)
@@ -179,6 +268,22 @@ class OpenAIRequestProfileTests(unittest.TestCase):
             prompt.completion_parameters({"max_completion_tokens": 1234, "reasoning_effort": "low"}),
             {"extra_body": {"max_completion_tokens": 1234, "reasoning_effort": "low"}},
         )
+
+    @patch.object(prompt, "_aoai_client")
+    def test_evaluator_structured_output_is_forwarded_without_changing_generation_defaults(self, client):
+        os.environ["ELV_OPENAI_REQUEST_PROFILE"] = "gpt4o"
+        schema = evaluation.judge_response_format([("candidate", evaluation.RULE_TEMPLATES["unsupported_assurance"])], {})
+        completion = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"checks":[]}'), finish_reason="stop")], usage=None,
+        )
+        client.return_value.with_options.return_value.chat.completions.create.return_value = completion
+        prompt.generate_response("evaluation:v1", {"evaluation_input": "{}"}, timeout_s=35.0,
+                                 max_retries=0, response_format=schema)
+        client.return_value.with_options.assert_called_once_with(timeout=35.0, max_retries=0)
+        arguments = client.return_value.with_options.return_value.chat.completions.create.call_args.kwargs
+        self.assertEqual(arguments["response_format"], schema)
+        self.assertEqual(arguments["max_tokens"], 6000)
+        client.return_value.chat.completions.create.assert_not_called()
 
     @patch.object(prompt, "_aoai_client")
     def test_invalid_request_profile_fails_before_model_client_creation(self, client):
@@ -687,6 +792,40 @@ class WindowsLauncherTests(unittest.TestCase):
         for value in ("yes", "TRUE", "", True):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "ELV_ENABLE_CONFIG_EDITING"):
                 self.launcher.validate_settings({**self.settings, "ELV_ENABLE_CONFIG_EDITING": value})
+
+    def test_evaluation_requires_explicit_json_and_forces_loopback(self):
+        with patch.dict(os.environ, {"ELV_ENABLE_EVALUATION": "true", "A2A_EVALUATOR_URL": "http://other",
+                                     "A2A_EVALUATOR_HOST": "0.0.0.0", "A2A_EVALUATOR_PORT": "80"}, clear=True):
+            environment = self.launcher.process_environment(self.settings)
+            self.assertEqual(environment["ELV_ENABLE_EVALUATION"], "false")
+            self.assertEqual(environment["A2A_EVALUATOR_URL"], "http://127.0.0.1:10000")
+            self.assertEqual(environment["A2A_EVALUATOR_HOST"], "127.0.0.1")
+            self.assertEqual(environment["A2A_EVALUATOR_PORT"], "10000")
+            self.assertEqual(self.launcher.process_environment({**self.settings, "ELV_ENABLE_EVALUATION": "true"})["ELV_ENABLE_EVALUATION"], "true")
+        for value in ("TRUE", "yes", "", True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.launcher.validate_settings({**self.settings, "ELV_ENABLE_EVALUATION": value})
+        command = self.launcher.command_for("evaluator", "python.exe", self.directory)
+        self.assertIn("evaluation_server:app", command)
+        self.assertEqual(command[command.index("--host") + 1], "127.0.0.1")
+        self.assertEqual(command[command.index("--port") + 1], "10000")
+
+    def test_evaluator_validation_never_calls_azure_and_disabled_does_not_launch(self):
+        path = self.directory / "runtime.json"
+        path.write_text(json.dumps(self.settings), encoding="utf-8")
+        python = self.launcher.PROJECT / ".venv" / "Scripts" / "python.exe"
+        arguments = ["--component", "evaluator", "--config", str(path), "--approved-azure-host", "--validate-only"]
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(self.launcher.sys, "platform", "win32"), \
+                patch.object(self.launcher.sys, "executable", str(python)), \
+                patch.object(self.launcher.subprocess, "run") as process, \
+                patch.object(rbac, "ManagedIdentityCredential") as credential:
+            with self.assertRaisesRegex(ValueError, "ELV_ENABLE_EVALUATION"):
+                self.launcher.main(arguments)
+            path.write_text(json.dumps({**self.settings, "ELV_ENABLE_EVALUATION": "true"}), encoding="utf-8")
+            self.assertEqual(self.launcher.main(arguments), 0)
+            process.assert_not_called()
+            credential.assert_not_called()
 
     def test_rag_requires_explicit_opt_in_endpoint_and_index_allowlist(self):
         inherited = {"ELV_ENABLE_RAG": "true", "AZURE_SEARCH_ENDPOINT": "https://other.search.windows.net", "ELV_SEARCH_ALLOWED_INDEXES": "other-index"}

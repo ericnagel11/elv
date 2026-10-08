@@ -15,6 +15,7 @@ import logging
 import datetime as dt
 import hashlib
 import json
+from uuid import uuid4
 
 import streamlit as st
 import textstat
@@ -24,11 +25,13 @@ from hosting import load_environment, vm_mode
 import audit
 import change_history
 import config as cfg
+import evaluation
 import knowledge
 import rbac
 from a2a_client import A2AClientError, A2ATaskError, ConfiguredAgentClient
 from config import AccessDenied, CredentialError, endpoints_summary, load_profile
-from config_editor import render_search_form, reset_results
+from config_editor import render_rules_form, render_search_form, reset_results
+from evaluation_client import EvaluationClient, EvaluationClientError
 from experience_runtime import GROUNDED_ASSET, run_grounded
 from search_settings import DEFAULT_QUESTION
 
@@ -69,12 +72,18 @@ def configured_agent() -> ConfiguredAgentClient:
     return ConfiguredAgentClient()
 
 
+@st.cache_resource(show_spinner=False)
+def configured_evaluator() -> EvaluationClient:
+    return EvaluationClient()
+
+
 def invalidate_configuration(published=False):
     cached_profile.clear()
     cached_knowledge.clear()
     reset_results(st.session_state, published=published)
     st.session_state.pop("history_page", None)
     st.session_state.pop("live_search_loaded", None)
+    st.session_state.pop("live_rules_loaded", None)
 
 
 def finish_mutation(action, *, published=False):
@@ -285,7 +294,85 @@ def render_answer(result: dict) -> None:
         )
 
 
-def render_variant(column, title: str, profile: dict, result: dict) -> None:
+def live_rules_editor(label):
+    loaded = st.session_state.get("live_rules_loaded")
+    if loaded and loaded["label"] != label:
+        st.session_state.pop("live_rules_loaded")
+        loaded = None
+    try:
+        if st.button("Load rules", icon=":material/refresh:"):
+            loaded = {"label": label, **cfg.load_rule_policy(label)}
+            for key in list(st.session_state):
+                if key.startswith("app:rules:"):
+                    st.session_state.pop(key, None)
+            st.session_state["live_rules_loaded"] = loaded
+        if not loaded:
+            return
+        if loaded["policy"] is None:
+            st.info("No rule policy is stored for this profile.")
+        else:
+            st.caption(f"Rules revision: {loaded['etag']} / {loaded['revision'][:12]}")
+        revision = hashlib.sha256(str(loaded["etag"]).encode()).hexdigest()[:12]
+        policy = render_rules_form(st, loaded["policy"], widget_key=f"app:rules:{label}:{revision}")
+        if policy is not None:
+            saved = cfg.save_rule_policy(label, policy, loaded["etag"])
+            clear_comparison_state()
+            st.session_state["live_rules_loaded"] = {"label": label, **saved}
+            st.session_state["live_config_saved"] = f"{label} / rules:policy"
+            st.session_state["live_config_audit_warnings"] = saved.get("audit_warnings", [])
+            st.rerun()
+    except (AccessDenied, CredentialError, cfg.ConfigurationConflict, ValueError, rbac.OperationDisabled, AzureError) as problem:
+        if isinstance(problem, cfg.ConfigurationConflict):
+            st.warning(str(problem))
+        elif isinstance(problem, (ValueError, rbac.OperationDisabled)):
+            st.error(str(problem))
+        else:
+            st.error("The rule policy could not be read or saved. Check App Configuration access and connectivity.")
+        outcome = getattr(problem, "mutation_result", None)
+        if outcome:
+            if outcome.outcome == "unknown":
+                clear_comparison_state()
+                st.warning("The rule save outcome is unconfirmed. Load rules before retrying.")
+            for warning in sorted(set(outcome.audit_warnings)):
+                st.warning(warning)
+
+
+def render_advisory(profile):
+    st.markdown("**Advisory evaluation**")
+    state = profile["state"]
+    labels = {
+        "complete": "Evaluation complete", "partial": "Evaluation incomplete",
+        "unavailable": "Evaluation unavailable", "not_configured": "Not evaluated: rules not configured",
+        "disabled": "Not evaluated: policy disabled", "no_active_rules": "Not evaluated: no active rules",
+    }
+    findings = [check for check in profile["checks"] if check["outcome"] == "finding"]
+    summary = labels[state]
+    if state in ("complete", "partial"):
+        completed = sum(check["outcome"] not in ("not_verifiable", "error") for check in profile["checks"])
+        summary += f" | {len(findings)} finding(s) | {completed}/{int(profile['active_rules'])} checks completed"
+    if findings or state in ("partial", "unavailable"):
+        st.warning(summary)
+    else:
+        st.info(summary)
+    if profile["policy_etag"]:
+        st.caption(f"Rules used: {profile['policy_etag']} / {profile['policy_revision'][:12]}")
+    for warning in profile["warnings"]:
+        st.caption(warning)
+    for check in profile["checks"]:
+        status = check["outcome"].replace("_", " ")
+        heading = f"{check['severity'].upper()} | {check['title']} | {status}"
+        with st.expander(heading, expanded=check["outcome"] == "finding"):
+            st.text(check["reason"])
+            for span in check["response_quotes"]:
+                st.text(f"Response: {span['quote']}")
+            for reference in check["evidence"]:
+                st.text(f"{reference['source_id']}: {reference['quote']}")
+            for span in check["baseline_quotes"]:
+                st.text(f"Baseline reference: {span['quote']}")
+            st.caption(f"Rule: {check['rule_id']} | {check['type']}")
+
+
+def render_variant(column, title: str, profile: dict, result: dict):
     with column:
         st.subheader(title)
         provenance = result.get("a2a") or {}
@@ -293,6 +380,7 @@ def render_variant(column, title: str, profile: dict, result: dict) -> None:
             f"Prompt asset: {provenance.get('prompt_asset') or profile.get('prompt_asset', 'n/a')}"
         )
         render_answer(result)
+        advisory_panel = st.empty()
 
         citations = result.get("citations") or []
         if citations:
@@ -336,6 +424,7 @@ def render_variant(column, title: str, profile: dict, result: dict) -> None:
                     "The rendered prompt is private inside the remote A2A agent. "
                     "Only the response artifact and safe provenance cross the boundary."
                 )
+    return advisory_panel
 
 
 def render_grounded(column, title: str, scope: dict, bundle: dict) -> None:
@@ -388,6 +477,7 @@ try:
     configuration_editing = rbac.config_editing_enabled()
     configuration_history = rbac.config_history_enabled()
     rag_available = rbac.rag_enabled()
+    evaluation_available = rbac.evaluation_enabled()
     if comparison:
         rbac.runtime_identity_id()
     if rag_available:
@@ -553,6 +643,8 @@ with tab_experience:
                 with st.spinner("Creating two A2A response tasks..."):
                     client = configured_agent()
                     request_options = {"grounded": grounded_request} if grounded_request or not comparison else {}
+                    if evaluation_available:
+                        request_options["evaluation_evidence"] = True
                     baseline = client.invoke(
                         user_message,
                         "baseline",
@@ -596,6 +688,14 @@ with tab_experience:
                         "baseline": baseline_result,
                         "candidate": candidate_result,
                     }
+                    if evaluation_available:
+                        st.session_state["results"].update(
+                            evaluation_pending=True,
+                            evaluation_request={
+                                "schema_version": 1, "comparison_id": str(uuid4()), "question": user_message,
+                                "responses": {"baseline": baseline.get("evaluation_evidence"), "candidate": candidate.get("evaluation_evidence")},
+                            },
+                        )
         except (AccessDenied, CredentialError) as denied:
             show_denied(denied)
         except A2ATaskError as problem:
@@ -610,8 +710,32 @@ with tab_experience:
     results = st.session_state.get("results")
     if results:
         left, right = st.columns(2)
-        render_variant(left, "Baseline (current)", results["baseline_profile"], results["baseline"])
-        render_variant(right, "Candidate (proposed)", results["candidate_profile"], results["candidate"])
+        panels = {
+            "baseline": render_variant(left, "Baseline (current)", results["baseline_profile"], results["baseline"]),
+            "candidate": render_variant(right, "Candidate (proposed)", results["candidate_profile"], results["candidate"]),
+        }
+        if evaluation_available:
+            if results.pop("evaluation_pending", False):
+                for panel in panels.values():
+                    panel.info("Advisory evaluation in progress...")
+                try:
+                    report = configured_evaluator().evaluate(results["evaluation_request"])
+                    results["evaluation"] = evaluation.validate_report(report, results["evaluation_request"])
+                except (EvaluationClientError, ValueError, TypeError, KeyError):
+                    results["evaluation_error"] = "Advisory evaluation is unavailable. Generated responses are unchanged."
+            for slot, panel in panels.items():
+                with panel.container():
+                    if results.get("evaluation"):
+                        render_advisory(results["evaluation"]["profiles"][slot])
+                    else:
+                        st.warning(results.get("evaluation_error", "Not evaluated. Generate a new comparison."))
+            if results.get("evaluation"):
+                report = results["evaluation"]
+                usage = report["usage"]
+                with st.expander("Evaluation provenance and usage"):
+                    st.table([{"field": name, "value": str(report[name])} for name in (
+                        "evaluation_id", "comparison_id", "timestamp", "evaluator_prompt", "deployment", "model", "latency_s",
+                    )] + [{"field": name, "value": str(value)} for name, value in usage.items()])
 
         st.divider()
         st.markdown("**Which response better fits the desired experience?**")
@@ -639,27 +763,30 @@ if comparison:
                 st.success(f"Saved to Azure: {saved_key}")
                 for warning in sorted(set(st.session_state.pop("live_config_audit_warnings", []))):
                     st.warning(warning)
-            area = st.selectbox("Configuration area", options=["Experience", "Knowledge"], key="live_config_area") if rag_available else "Experience"
+            areas = ["Experience"] + (["Knowledge"] if rag_available else []) + (["Rules"] if evaluation_available else [])
+            area = st.selectbox("Configuration area", options=areas, key="live_config_area") if len(areas) > 1 else "Experience"
             edit_prefix = cfg.KNOWLEDGE_PREFIX if area == "Knowledge" else cfg.EXPERIENCE_PREFIX
             editable_keys = cfg.COMPARISON_KNOWLEDGE_KEYS if area == "Knowledge" else cfg.EDITABLE_KEYS
             edit_profile = st.selectbox(
                 "Profile", options=cfg.PROFILE_LABELS, index=cfg.PROFILE_LABELS.index("candidate"),
                 key="live_config_profile",
             )
+            if area == "Rules":
+                live_rules_editor(edit_profile)
             if area == "Knowledge":
                 with st.expander("Search configuration", expanded=True):
                     live_search_editor(edit_profile)
             edit_key = st.selectbox(
                 "Setting", options=editable_keys,
                 format_func=lambda short_key: f"{edit_prefix}{short_key}", key="live_config_key",
-            )
+            ) if area != "Rules" else None
             selected = (edit_profile, edit_key, edit_prefix)
             loaded = st.session_state.get("live_config_loaded")
             if loaded and loaded["target"] != selected:
                 st.session_state.pop("live_config_loaded")
                 loaded = None
             try:
-                if st.button("Load current value", icon=":material/refresh:"):
+                if area != "Rules" and st.button("Load current value", icon=":material/refresh:"):
                     setting = (
                         cfg.load_editable_setting(edit_profile, edit_key, prefix=cfg.KNOWLEDGE_PREFIX)
                         if area == "Knowledge" else cfg.load_editable_setting(edit_profile, edit_key)

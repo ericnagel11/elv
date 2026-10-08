@@ -25,10 +25,11 @@ from azure.appconfiguration import AzureAppConfigurationClient, ConfigurationSet
 from azure.core import MatchConditions
 from azure.core.exceptions import (
     ClientAuthenticationError, HttpResponseError, ResourceModifiedError,
-    ResourceNotFoundError, ServiceRequestError, ServiceResponseError,
+    ResourceNotFoundError, ResourceExistsError, ServiceRequestError, ServiceResponseError,
 )
 
 import change_history
+import evaluation
 import rbac
 from search_settings import validate_settings
 
@@ -231,6 +232,85 @@ def load_profile(label: str, store: str = "production", persona=None,
 def load_knowledge(label: str = DRAFT_LABEL, store: str = "production", persona=None) -> dict:
     """Return the knowledge:* retrieval scope for a label."""
     return load_profile(label, store, persona, prefix=KNOWLEDGE_PREFIX)
+
+
+def _require_rule_policy(label, *, writing=False):
+    if not rbac.evaluation_enabled() or label not in PROFILE_LABELS:
+        raise rbac.OperationDisabled("Only enabled comparison rule policies are available.")
+    if writing and not rbac.config_editing_enabled():
+        raise rbac.OperationDisabled("Live configuration editing is not enabled.")
+
+
+def _rule_setting(value, etag, **extra):
+    if value is None and etag is not None:
+        raise ValueError("The stored rule policy has no JSON value. Correct it in App Configuration.")
+    policy = evaluation.parse_policy(value) if value is not None else None
+    if value is not None and (not isinstance(etag, str) or not etag or etag == "*"):
+        raise ConfigurationConflict("The rule policy has no usable version. Reload before saving.")
+    return {"value": value, "etag": etag, "policy": policy,
+            "revision": evaluation.policy_revision(policy) if policy is not None else None, **extra}
+
+
+def load_rule_policy(label: str) -> dict:
+    """Read the exact policy and version afresh; an absent label never falls back."""
+    _require_rule_policy(label)
+
+    def _read():
+        try:
+            current = _client("production", "app").get_configuration_setting(
+                key=evaluation.POLICY_KEY, label=label,
+                connection_timeout=5, read_timeout=10, retry_total=0,
+            )
+        except ResourceNotFoundError:
+            return _rule_setting(None, None)
+        return _rule_setting(current.value, current.etag)
+
+    return _guard(f"read the {label} rule policy", "production", _read)
+
+
+def save_rule_policy(label: str, policy: dict, expected_etag: str | None) -> dict:
+    """Explicitly create or conditionally update only this profile's rules:policy."""
+    _require_rule_policy(label, writing=True)
+    value = evaluation.policy_json(policy)
+    if expected_etag is not None:
+        saved = _update_live_setting(label, "policy", value, expected_etag, "rules:")
+        return _rule_setting(**saved)
+
+    result = MutationResult()
+    write_issued = False
+    try:
+        client = _client("production", "app")
+        write_issued = True
+        try:
+            saved = _guard(
+                f"create the {label} rule policy", "production",
+                lambda: client.add_configuration_setting(ConfigurationSetting(
+                    key=evaluation.POLICY_KEY, label=label, value=value, content_type="application/json",
+                )),
+            )
+        except ResourceExistsError:
+            raise ConfigurationConflict("This rule policy was created by another editor. Reload before saving.") from None
+    except Exception as exc:
+        result.outcome, category = _failure(exc, write_issued)
+        result.failed_key = evaluation.POLICY_KEY
+        if rbac.config_history_enabled():
+            result.audit_warnings.extend(_record(
+                "app", operation_id=result.operation_id, operation="save", store="production",
+                label=label, key=evaluation.POLICY_KEY, old_value=None, new_value=value,
+                old_value_known=False, old_etag=None, new_etag=None,
+                outcome=result.outcome, error_category=category,
+            ))
+        exc.mutation_result = result
+        raise
+    if rbac.config_history_enabled():
+        result.audit_warnings.extend(_record(
+            "app", operation_id=result.operation_id, operation="save", store="production",
+            label=label, key=evaluation.POLICY_KEY, old_value=None, new_value=saved.value,
+            old_value_known=True, old_etag=None, new_etag=saved.etag,
+            outcome="success", error_category=None,
+        ))
+    return _rule_setting(saved.value, saved.etag, operation_id=result.operation_id,
+                         audit_warnings=result.audit_warnings)
 
 
 def _require_editable_setting(label: str, short_key: str, prefix: str = EXPERIENCE_PREFIX) -> None:

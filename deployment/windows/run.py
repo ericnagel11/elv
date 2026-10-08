@@ -22,6 +22,7 @@ ALLOWED_SETTINGS = REQUIRED_SETTINGS | {
     "ELV_OPENAI_REQUEST_PROFILE", "ELV_ENABLE_CONFIG_EDITING", "ELV_ENABLE_RAG",
     "AZURE_SEARCH_ENDPOINT", "ELV_SEARCH_ALLOWED_INDEXES",
     "ELV_ENABLE_CONFIG_HISTORY", "ELV_AUDIT_BLOB_ACCOUNT_URL", "ELV_AUDIT_BLOB_CONTAINER",
+    "ELV_ENABLE_EVALUATION",
 }
 FORCED_SETTINGS = {
     "ELV_HOSTING_MODE": "azure-vm",
@@ -30,6 +31,9 @@ FORCED_SETTINGS = {
     "A2A_AGENT_URL": "http://127.0.0.1:9999",
     "A2A_AGENT_HOST": "127.0.0.1",
     "A2A_AGENT_PORT": "9999",
+    "A2A_EVALUATOR_URL": "http://127.0.0.1:10000",
+    "A2A_EVALUATOR_HOST": "127.0.0.1",
+    "A2A_EVALUATOR_PORT": "10000",
 }
 
 
@@ -100,6 +104,8 @@ def validate_settings(settings: dict) -> None:
         raise ValueError("This launcher requires ELV_OPENAI_REQUEST_PROFILE=gpt4o.")
     if settings.get("ELV_ENABLE_CONFIG_EDITING", "false") not in {"true", "false"}:
         raise ValueError("ELV_ENABLE_CONFIG_EDITING must be true or false.")
+    if settings.get("ELV_ENABLE_EVALUATION", "false") not in {"true", "false"}:
+        raise ValueError("ELV_ENABLE_EVALUATION must be true or false.")
     if settings.get("ELV_ENABLE_CONFIG_HISTORY", "false") not in {"true", "false"}:
         raise ValueError("ELV_ENABLE_CONFIG_HISTORY must be true or false.")
     history_enabled = settings.get("ELV_ENABLE_CONFIG_HISTORY") == "true"
@@ -128,6 +134,7 @@ def process_environment(settings: dict) -> dict:
     environment.update(settings)
     environment.update(FORCED_SETTINGS)
     environment["ELV_ENABLE_CONFIG_EDITING"] = settings.get("ELV_ENABLE_CONFIG_EDITING", "false")
+    environment["ELV_ENABLE_EVALUATION"] = settings.get("ELV_ENABLE_EVALUATION", "false")
     environment["ELV_ENABLE_RAG"] = settings.get("ELV_ENABLE_RAG", "false")
     environment["AZURE_SEARCH_ENDPOINT"] = settings.get("AZURE_SEARCH_ENDPOINT", "")
     environment["ELV_SEARCH_ALLOWED_INDEXES"] = settings.get("ELV_SEARCH_ALLOWED_INDEXES", "")
@@ -147,6 +154,8 @@ def process_environment(settings: dict) -> dict:
 def command_for(component: str, python: str, project: Path) -> list:
     if component == "agent":
         return [python, "-m", "uvicorn", "a2a_server:app", "--host", "127.0.0.1", "--port", "9999"]
+    if component == "evaluator":
+        return [python, "-m", "uvicorn", "evaluation_server:app", "--host", "127.0.0.1", "--port", "10000"]
     if component == "ui":
         return [
             python, "-m", "streamlit", "run", str(project / "app.py"),
@@ -155,13 +164,13 @@ def command_for(component: str, python: str, project: Path) -> list:
             "--server.enableXsrfProtection=true", "--server.fileWatcherType=none",
             "--browser.gatherUsageStats=false",
         ]
-    raise ValueError("Component must be agent or ui.")
+    raise ValueError("Component must be agent, evaluator or ui.")
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--component", choices=("agent", "ui"), required=True)
+    parser.add_argument("--component", choices=("agent", "evaluator", "ui"), required=True)
     parser.add_argument("--approved-azure-host", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args(argv)
@@ -179,6 +188,9 @@ def main(argv=None) -> int:
     rbac.runtime_identity_id()
     rbac.config_editing_enabled()
     rbac.config_history_enabled()
+    evaluation_enabled = rbac.evaluation_enabled()
+    if args.component == "evaluator" and not evaluation_enabled:
+        raise ValueError("Set ELV_ENABLE_EVALUATION=true in approved runtime JSON before starting the evaluator.")
     if rbac.rag_enabled():
         rbac.approved_search_indexes()
     if args.validate_only:

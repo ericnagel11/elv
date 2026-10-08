@@ -5,6 +5,9 @@ form can distinguish absent settings from invalid or explicitly blank settings.
 The caller owns persistence, authorization, and configuration/cache refresh.
 """
 
+from copy import deepcopy
+
+import evaluation
 from search_settings import DEFAULTS, validate_settings
 
 
@@ -179,6 +182,82 @@ def render_search_form(st, scope: dict, *, editable: bool, widget_key: str,
         st.error("A blank filter applies no filter. Tick the explicit acknowledgement before saving.")
         return None
     return normalized
+
+
+def render_rules_form(st, policy: dict | None, *, widget_key: str) -> dict | None:
+    """Return a complete validated policy only after an explicit save/removal."""
+    stored = evaluation.validate_policy(policy) if policy is not None else {
+        "schema_version": 1, "enabled": True, "rules": [],
+    }
+    with st.form(f"{widget_key}:policy"):
+        enabled = st.toggle("Policy enabled", value=stored["enabled"], key=f"{widget_key}:enabled")
+        save_state = st.form_submit_button("Save policy state", icon=":material/save:")
+    if save_state:
+        return {**stored, "enabled": enabled}
+
+    rules = {rule["id"]: rule for rule in stored["rules"]}
+    selected = st.selectbox(
+        "Rule", options=[*rules, None], key=f"{widget_key}:selected",
+        format_func=lambda identifier: f"{rules[identifier]['title']} ({identifier})" if identifier is not None else "Add a rule",
+    )
+    if selected is None:
+        rule_type = st.selectbox(
+            "Rule template", options=list(evaluation.RULE_TEMPLATES), key=f"{widget_key}:template",
+            format_func=lambda kind: evaluation.RULE_TEMPLATES[kind]["title"],
+        )
+        initial = deepcopy(evaluation.RULE_TEMPLATES[rule_type])
+        existing_ids = set(rules)
+        original_id = initial["id"]
+        suffix = 2
+        while initial["id"] in existing_ids:
+            initial["id"] = f"{original_id}-{suffix}"
+            suffix += 1
+    else:
+        initial = deepcopy(rules[selected])
+        rule_type = initial["type"]
+        st.caption(evaluation.RULE_TEMPLATES[rule_type]["title"])
+    prefix = f"{widget_key}:{selected or 'new'}:{rule_type}"
+    with st.form(f"{prefix}:form"):
+        values = {
+            "id": st.text_input("Rule ID", value=initial["id"], max_chars=64, disabled=selected is not None, key=f"{prefix}:id"),
+            "title": st.text_input("Rule title", value=initial["title"], max_chars=120, key=f"{prefix}:title"),
+            "type": rule_type,
+            "enabled": st.toggle("Rule enabled", value=initial["enabled"], key=f"{prefix}:enabled"),
+            "severity": st.selectbox("Severity", evaluation.SEVERITIES,
+                index=evaluation.SEVERITIES.index(initial["severity"]), key=f"{prefix}:severity"),
+            "criteria": st.text_area("Business criteria", value=initial["criteria"], max_chars=800,
+                height=120, key=f"{prefix}:criteria"),
+            "parameters": {},
+        }
+        if rule_type == "literal_phrase":
+            terms = st.text_area("Literal phrases", value="\n".join(initial["parameters"]["terms"]),
+                height=110, max_chars=810, key=f"{prefix}:terms", help="One literal phrase per line; not a regular expression.")
+            values["parameters"] = {
+                "terms": [term.strip() for term in terms.splitlines() if term.strip()],
+                "match": st.radio("Matching", ("phrase", "substring"),
+                    index=("phrase", "substring").index(initial["parameters"]["match"]), horizontal=True, key=f"{prefix}:match"),
+                "case_sensitive": st.checkbox("Case sensitive", value=initial["parameters"]["case_sensitive"], key=f"{prefix}:case"),
+            }
+        elif rule_type == "fact_preservation":
+            values["parameters"] = {"compare_baseline": st.checkbox(
+                "Include supported baseline facts when evaluating candidate", value=initial["parameters"]["compare_baseline"],
+                key=f"{prefix}:baseline",
+            )}
+        save = st.form_submit_button("Save rule to Azure", type="primary", icon=":material/save:",
+            disabled=selected is None and len(rules) >= evaluation.MAX_RULES)
+        remove = st.form_submit_button("Remove rule from Azure", icon=":material/delete:") if selected is not None else False
+    if not save and not remove:
+        return None
+    updated = [rule for rule in stored["rules"] if not (remove and rule["id"] == selected)]
+    if save and selected is not None:
+        updated = [values if rule["id"] == selected else rule for rule in updated]
+    elif save:
+        updated.append(values)
+    try:
+        return evaluation.validate_policy({**stored, "rules": updated})
+    except ValueError as exc:
+        st.error(str(exc))
+        return None
 
 
 def reset_results(state, published: bool) -> None:

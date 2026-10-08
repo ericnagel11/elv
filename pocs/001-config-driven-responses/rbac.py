@@ -101,6 +101,13 @@ def rag_enabled() -> bool:
     return comparison_mode() and enabled == "true"
 
 
+def evaluation_enabled() -> bool:
+    enabled = os.environ.get("ELV_ENABLE_EVALUATION", "false")
+    if enabled not in {"true", "false"}:
+        raise ValueError("ELV_ENABLE_EVALUATION must be true or false.")
+    return comparison_mode() and enabled == "true"
+
+
 def approved_search_indexes() -> tuple:
     names = [name.strip() for name in os.environ.get("ELV_SEARCH_ALLOWED_INDEXES", "").split(",")]
     if not names or any(not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,127}", name) for name in names):
