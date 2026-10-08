@@ -1,0 +1,60 @@
+---
+config:
+  theme: base
+  htmlLabels: false
+  fontFamily: "Arial, Helvetica, sans-serif"
+  themeCSS: |
+    text { font-family: Arial, Helvetica, sans-serif; }
+    .actor-line { stroke-dasharray: 4 4; stroke-width: 1; }
+  themeVariables:
+    background: "#ffffff"
+    fontFamily: "Arial, Helvetica, sans-serif"
+    fontSize: "18px"
+    textColor: "#172333"
+    lineColor: "#52677d"
+    actorBkg: "#ffffff"
+    actorBorder: "#52677d"
+    actorTextColor: "#172333"
+    actorLineColor: "#52677d"
+    signalColor: "#52677d"
+    signalTextColor: "#172333"
+    labelBoxBkgColor: "#ffffff"
+    labelBoxBorderColor: "#52677d"
+    labelTextColor: "#172333"
+    loopTextColor: "#172333"
+  sequence:
+    useMaxWidth: false
+    mirrorActors: false
+    diagramMarginX: 20
+    diagramMarginY: 20
+    actorMargin: 50
+    width: 180
+    height: 65
+    boxMargin: 12
+    boxTextMargin: 10
+    messageMargin: 40
+    wrap: true
+    actorFontFamily: "Arial, Helvetica, sans-serif"
+    actorFontSize: 18
+    messageFontFamily: "Arial, Helvetica, sans-serif"
+    messageFontSize: 18
+---
+sequenceDiagram
+  participant User
+  participant Coordinator
+  participant Worker as Configured response agent
+  participant Config as App Configuration
+  participant Services as Search and OpenAI
+  User->>Coordinator: Compound request<br/>and authenticated context
+  Coordinator->>Coordinator: Validate bounded plan<br/>and clarify scope
+  loop Each approved subtask
+    Coordinator->>Worker: HTTPS A2A + scoped token<br/>capability ID and subquestion
+    Worker->>Worker: Authorize capability<br/>and establish child context
+    Worker->>Config: HTTPS + MI<br/>read approved profile and release
+    Config-->>Worker: Persona, template reference<br/>and knowledge settings
+    Worker->>Services: HTTPS + MI<br/>permitted retrieval and inference
+    Services-->>Worker: Evidence and result
+    Worker-->>Coordinator: Typed artifact and outcome<br/>evidence and release references
+  end
+  Coordinator->>Coordinator: Validate synthesis<br/>and source support
+  Coordinator-->>User: Supported answer<br/>or explicit partial/no-answer outcome
